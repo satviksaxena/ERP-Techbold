@@ -67,7 +67,10 @@ function WorkbenchPage() {
   const { data: activity } = useActivity(ticketId);
   const qc = useQueryClient();
 
-  const pending = useMemo(() => cmds.find((c) => c.human_status === "Pending"), [cmds]);
+  const pending = useMemo(
+    () => [...cmds].reverse().find((c) => c.human_status === "Pending"),
+    [cmds],
+  );
   const validationPass = useMemo(() => publicTestPassed(cmds), [cmds]);
   const lastFailed = useMemo(() => lastFailedCommand(cmds), [cmds]);
   const executedCount = useMemo(

@@ -13,6 +13,7 @@ export type HypothesisItem = {
 export type HypothesisState = {
   hypotheses: HypothesisItem[];
   selected_index: number;
+  reasoning_summary?: string;
 };
 
 type RequestOptions = RequestInit & { timeoutMs?: number };
@@ -62,7 +63,7 @@ export const api = {
   startAnalysis: (ticketId: string) =>
     request<{ ok: boolean; command: unknown; hypotheses?: HypothesisState }>(
       `/api/tickets/${ticketId}/analyze`,
-      { method: "POST" },
+      { method: "POST", timeoutMs: 120_000 },
     ),
 
   getHypotheses: (ticketId: string) =>
@@ -71,7 +72,7 @@ export const api = {
   generateHypotheses: (ticketId: string) =>
     request<HypothesisState & { ok: boolean }>(
       `/api/tickets/${ticketId}/hypotheses/generate`,
-      { method: "POST" },
+      { method: "POST", timeoutMs: 120_000 },
     ),
 
   selectHypothesis: (ticketId: string, index: number) =>

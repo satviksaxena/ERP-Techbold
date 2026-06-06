@@ -33,6 +33,7 @@ export function SafetyGate({ command }: { command: AiCommand }) {
     setBusy(true);
     try {
       await api.approveCommand(command.id, edited);
+      await qc.refetchQueries({ queryKey: ["commands", command.ticket_id] });
       const passMsg = edited.toLowerCase().includes("public-test")
         ? " — check validation banner for PASS status"
         : "";
@@ -133,6 +134,7 @@ export function SafetyGate({ command }: { command: AiCommand }) {
       <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-center">
         <SlideToAuthorize
           key={command.id}
+          commandId={command.id}
           onAuthorize={authorize}
           disabled={blocked}
           label={blocked ? "blocked by safety policy" : busy ? "running on VM…" : "slide to authorize command"}

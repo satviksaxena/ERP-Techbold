@@ -124,13 +124,27 @@ class AgentOrchestrator:
             raise ValueError("Ticket not found")
         sys_info = self.store.get_system_info(ticket_uuid)
         items = self.hypothesis_generator.generate(ticket, sys_info)
-        return self.hypothesis_store.save(ticket_uuid, items, selected_index=0)
+        saved = self.hypothesis_store.save(
+            ticket_uuid,
+            items["hypotheses"],
+            selected_index=0,
+            reasoning_summary=items.get("reasoning_summary") or "",
+        )
+        if items.get("reasoning_summary"):
+            self.audit.record(
+                "ticket_reasoning",
+                ticket_id=ticket_uuid,
+                model=items.get("thinking_model", ""),
+                level=items.get("thinking_level", ""),
+                summary=(items.get("reasoning_summary") or "")[:500],
+            )
+        return saved
 
     def get_hypotheses(self, ticket_uuid: str) -> dict[str, Any]:
         data = self.hypothesis_store.get(ticket_uuid)
         if data:
             return data
-        return {"hypotheses": [], "selected_index": 0}
+        return {"hypotheses": [], "selected_index": 0, "reasoning_summary": ""}
 
     def select_hypothesis(self, ticket_uuid: str, index: int) -> dict[str, Any]:
         data = self.hypothesis_store.select(ticket_uuid, index)
@@ -696,8 +710,25 @@ Previous commands and outputs are in the conversation."""
 
         return updated, ticket_uuid, validation_passed
 
+    def _dedupe_pending_commands(self, ticket_uuid: str) -> None:
+        """Keep only the newest pending command — stale duplicates confuse the command gate."""
+        pending = [
+            c for c in self.store.list_commands(ticket_uuid) if c.get("human_status") == "Pending"
+        ]
+        if len(pending) <= 1:
+            return
+        pending.sort(key=lambda c: c.get("created_at") or "")
+        for stale in pending[:-1]:
+            self.store.update_command(stale["id"], human_status="Rejected")
+            self.audit.record(
+                "duplicate_pending_rejected",
+                ticket_id=ticket_uuid,
+                command=stale.get("command_text"),
+            )
+
     def approve_followup(self, ticket_uuid: str, validation_passed: bool) -> None:
         """Regenerate activity draft and optionally queue the next command (slow LLM work)."""
+        self._dedupe_pending_commands(ticket_uuid)
         ticket = self.store.get_ticket(ticket_uuid)
         self._refresh_activity_draft(ticket_uuid)
         if ticket and not validation_passed:
@@ -713,6 +744,7 @@ Previous commands and outputs are in the conversation."""
 
     def resume_pipeline(self, ticket_uuid: str) -> dict[str, Any]:
         """Unstick workbench when follow-up was lost (e.g. uvicorn --reload during approve)."""
+        self._dedupe_pending_commands(ticket_uuid)
         commands = self.store.list_commands(ticket_uuid)
         if not commands:
             return {"resumed": False, "reason": "no_commands"}
@@ -943,12 +975,29 @@ Previous commands and outputs are in the conversation."""
     def reset_workspace(self) -> None:
         if self.phoenix:
             self.phoenix.reset()
+            # Phoenix reset clears activities/VMs but tickets can stay DONE — reopen for a fresh run.
+            for pt in self.phoenix.list_tickets(sort="date"):
+                if pt.get("status") == "OPEN":
+                    continue
+                try:
+                    self.phoenix.set_ticket_status(int(pt["id"]), "OPEN")
+                except Exception as exc:
+                    self.audit.record(
+                        "reset_ticket_reopen_failed",
+                        ticket_code=str(pt.get("id")),
+                        error=str(exc),
+                    )
         self.store.reset_workspace()
         self.audit.clear()
         self._run_started.clear()
         self._ssh_key_by_ticket.clear()
         self._system_notes_by_ticket.clear()
         self.hypothesis_store.clear_all()
+        if self.phoenix:
+            try:
+                self.sync_tickets()
+            except Exception as exc:
+                self.audit.record("reset_sync_failed", error=str(exc))
         self.audit.record("workspace_reset")
 
     def _run_ssh_command(

@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.5-flash"
 
+    # Thinking model — ticket understanding / hypothesis generation only (not command proposals)
+    gemini_thinking_model: str = "gemini-3.5-flash"
+    gemini_thinking_level: str = "high"  # minimal | low | medium | high
+    gemini_ticket_thinking_enabled: bool = True
+
     # gemini | azure — which LLM drives command proposals and activity drafts
     llm_primary: str = "gemini"
 

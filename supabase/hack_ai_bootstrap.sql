@@ -57,8 +57,12 @@ CREATE TABLE IF NOT EXISTS public.ticket_hypotheses (
   ticket_id UUID PRIMARY KEY REFERENCES public.tickets(id) ON DELETE CASCADE,
   hypotheses JSONB NOT NULL DEFAULT '[]',
   selected_index INTEGER NOT NULL DEFAULT 0,
+  reasoning_summary TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.ticket_hypotheses
+  ADD COLUMN IF NOT EXISTS reasoning_summary TEXT NOT NULL DEFAULT '';
 
 -- 2. Grants
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.tickets TO anon, authenticated;

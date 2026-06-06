@@ -36,22 +36,36 @@ class HypothesisStore:
                 _GLOBAL_MEMORY[ticket_uuid] = {
                     "hypotheses": row.get("hypotheses") or [],
                     "selected_index": row.get("selected_index", 0),
+                    "reasoning_summary": row.get("reasoning_summary") or "",
                 }
                 return _GLOBAL_MEMORY[ticket_uuid]
         except Exception as exc:
             logger.debug("hypotheses table read failed (run migration?): %s", exc)
         return None
 
-    def save(self, ticket_uuid: str, hypotheses: list[dict[str, Any]], selected_index: int = 0) -> dict[str, Any]:
-        payload = {"hypotheses": hypotheses, "selected_index": selected_index}
+    def save(
+        self,
+        ticket_uuid: str,
+        hypotheses: list[dict[str, Any]],
+        selected_index: int = 0,
+        reasoning_summary: str = "",
+    ) -> dict[str, Any]:
+        payload = {
+            "hypotheses": hypotheses,
+            "selected_index": selected_index,
+            "reasoning_summary": reasoning_summary,
+        }
         _GLOBAL_MEMORY[ticket_uuid] = payload
         try:
+            row: dict[str, Any] = {
+                "ticket_id": ticket_uuid,
+                "hypotheses": hypotheses,
+                "selected_index": selected_index,
+            }
+            if reasoning_summary:
+                row["reasoning_summary"] = reasoning_summary
             self._store.client.table("ticket_hypotheses").upsert(
-                {
-                    "ticket_id": ticket_uuid,
-                    "hypotheses": hypotheses,
-                    "selected_index": selected_index,
-                },
+                row,
                 on_conflict="ticket_id",
             ).execute()
         except Exception as exc:
@@ -59,8 +73,17 @@ class HypothesisStore:
         return payload
 
     def select(self, ticket_uuid: str, index: int) -> dict[str, Any]:
-        current = self.get(ticket_uuid) or {"hypotheses": [], "selected_index": 0}
+        current = self.get(ticket_uuid) or {
+            "hypotheses": [],
+            "selected_index": 0,
+            "reasoning_summary": "",
+        }
         hypotheses = current.get("hypotheses") or []
         if hypotheses:
             index = max(0, min(index, len(hypotheses) - 1))
-        return self.save(ticket_uuid, hypotheses, index)
+        return self.save(
+            ticket_uuid,
+            hypotheses,
+            index,
+            reasoning_summary=current.get("reasoning_summary") or "",
+        )

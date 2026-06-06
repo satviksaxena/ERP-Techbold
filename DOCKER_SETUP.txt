@@ -78,6 +78,9 @@ STEP 3 — Create your environment file (.env)
   GEMINI_API_KEY=...
   GEMINI_MODEL=gemini-3.5-flash
   LLM_PRIMARY=gemini
+  GEMINI_THINKING_MODEL=gemini-3.5-flash
+  GEMINI_THINKING_LEVEL=high
+  GEMINI_TICKET_THINKING_ENABLED=true
       Primary AI for command proposals. (Or use Azure OpenAI vars below.)
 
   Optional Azure OpenAI (if not using Gemini):

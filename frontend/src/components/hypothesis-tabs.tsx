@@ -4,7 +4,7 @@ import { api, type HypothesisItem } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { CollapsiblePanel } from "@/components/collapsible-panel";
 import type { AiCommand } from "@/lib/types";
-import { Lightbulb, Loader2 } from "lucide-react";
+import { Lightbulb, Loader2, Brain } from "lucide-react";
 import { toast } from "sonner";
 
 const confidenceColor: Record<string, string> = {
@@ -54,6 +54,7 @@ export function HypothesisTabs({
         qc.setQueryData(["hypotheses", ticketId], {
           hypotheses: result.hypotheses ?? [],
           selected_index: result.selected_index ?? 0,
+          reasoning_summary: result.reasoning_summary ?? "",
         });
       })
       .catch(() => {
@@ -63,6 +64,7 @@ export function HypothesisTabs({
 
   const hypotheses = data?.hypotheses ?? [];
   const selectedIndex = data?.selected_index ?? 0;
+  const reasoningSummary = data?.reasoning_summary ?? "";
 
   useEffect(() => {
     if (hypotheses.length > 0 && expandedIndex === null) {
@@ -152,7 +154,7 @@ export function HypothesisTabs({
       <CollapsiblePanel title="AI Solution Paths" subtitle="this way or that way" summary={summary}>
         <div className="flex items-center gap-2 text-xs text-muted-foreground py-4 justify-center">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Generating solution pathways…
+          Generating solution pathways with thinking model…
         </div>
       </CollapsiblePanel>
     );
@@ -173,6 +175,17 @@ export function HypothesisTabs({
   return (
     <CollapsiblePanel title="AI Solution Paths" subtitle="this way or that way" summary={summary}>
       <div className="space-y-3 min-w-0">
+      {reasoningSummary && (
+        <div className="rounded-lg border border-primary/30 bg-primary/5 p-4 space-y-2 min-w-0">
+          <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-primary">
+            <Brain className="h-3.5 w-3.5 shrink-0" />
+            Ticket analysis · thinking model
+          </div>
+          <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap break-words">
+            {reasoningSummary}
+          </p>
+        </div>
+      )}
       <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
         <Lightbulb className="h-3.5 w-3.5 text-primary shrink-0" />
         Pick a pathway — click a card to view details
@@ -277,7 +290,7 @@ function pathSummary(
     return "Validation passed · public-test.sh exit 0";
   }
   if (isLoading || (!hypotheses.length && isFetching)) {
-    return "Generating solution pathways…";
+    return "Generating solution pathways with thinking model…";
   }
   if (!hypotheses.length) {
     return "No pathways yet — start analysis to generate approaches";

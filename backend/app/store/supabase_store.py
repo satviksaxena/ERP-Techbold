@@ -98,8 +98,11 @@ class SupabaseStore:
 
         existing = self.get_ticket_by_code(code)
         if existing:
-            # Refresh ERP metadata but keep in-progress local workflow state.
-            if existing.get("status") in ("Open", "Fixed"):
+            # Phoenix OPEN always wins (e.g. after workspace reset / ERP reopen).
+            if phoenix_ticket.get("status", "OPEN") == "OPEN":
+                payload["status"] = "Open"
+                payload["active_agent"] = "Problem Analyzer"
+            elif existing.get("status") in ("Open", "Fixed"):
                 payload["status"] = phoenix_status
             resp = self.client.table("tickets").update(payload).eq("id", existing["id"]).execute()
             row = resp.data[0] if resp.data else existing
@@ -161,17 +164,19 @@ class SupabaseStore:
         return self._maybe_one(self.client.table("activities").select("*").eq("ticket_id", ticket_uuid))
 
     def reset_workspace(self) -> None:
-        self.client.table("ai_commands").update({"human_status": "Pending", "output_logs": ""}).neq(
-            "id", "00000000-0000-0000-0000-000000000000"
-        ).execute()
-        self.client.table("tickets").update({"status": "Open", "active_agent": "Problem Analyzer"}).neq(
-            "id", "00000000-0000-0000-0000-000000000000"
-        ).execute()
-        self.client.table("activities").update({"submitted_to_erp": False}).neq(
-            "id", "00000000-0000-0000-0000-000000000000"
-        ).execute()
+        """Wipe local run state so tickets appear fresh (Open, no commands/hypotheses)."""
+        null_uuid = "00000000-0000-0000-0000-000000000000"
+        self.client.table("ai_commands").delete().neq("id", null_uuid).execute()
+        self.client.table("activities").delete().neq("ticket_id", null_uuid).execute()
+        try:
+            self.client.table("ticket_hypotheses").delete().neq("ticket_id", null_uuid).execute()
+        except Exception:
+            pass
+        self.client.table("tickets").update(
+            {"status": "Open", "active_agent": "Problem Analyzer"}
+        ).neq("id", null_uuid).execute()
         self.client.table("system_info").update({"connection_status": "Idle"}).neq(
-            "id", "00000000-0000-0000-0000-000000000000"
+            "id", null_uuid
         ).execute()
 
     def clear_ticket_run(self, ticket_uuid: str) -> None:

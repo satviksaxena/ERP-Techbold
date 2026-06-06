@@ -8,6 +8,7 @@ from typing import Any
 from app.agent.llm_schemas import HypothesisItem, HypothesisList
 from app.agent.azure_agent import AzureOpenAIAgent
 from app.agent.gemini_agent import GeminiAgentService
+from app.agent.ticket_understanding import TicketUnderstandingService
 from app.config import Settings
 from app.safety.layer import SafetyLayer
 
@@ -115,11 +116,34 @@ class HypothesisGenerator:
         self.safety = safety or SafetyLayer()
         self.azure = AzureOpenAIAgent(settings, safety)
         self.gemini = GeminiAgentService(settings, safety)
+        self.ticket_understanding = TicketUnderstandingService(settings, safety)
 
     def generate(
         self,
         ticket: dict[str, Any],
         system_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return hypotheses plus optional reasoning_summary from the thinking model."""
+        primary = (self.settings.llm_primary or "gemini").lower()
+
+        if primary == "gemini" and self.ticket_understanding.enabled:
+            thinking = self.ticket_understanding.analyze(ticket, system_info)
+            if thinking and thinking.get("hypotheses"):
+                return {
+                    "hypotheses": thinking["hypotheses"],
+                    "reasoning_summary": thinking.get("reasoning_summary") or "",
+                    "thinking_model": thinking.get("thinking_model", ""),
+                    "thinking_level": thinking.get("thinking_level", ""),
+                }
+
+        hypotheses = self._generate_without_thinking(ticket, system_info, primary)
+        return {"hypotheses": hypotheses, "reasoning_summary": ""}
+
+    def _generate_without_thinking(
+        self,
+        ticket: dict[str, Any],
+        system_info: dict[str, Any] | None,
+        primary: str,
     ) -> list[dict[str, Any]]:
         system_block = ""
         if system_info:

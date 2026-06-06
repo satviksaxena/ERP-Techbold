@@ -39,7 +39,7 @@ export function AppHeader() {
     setResetting(true);
     try {
       await api.resetWorkspace();
-      toast.success("Workspace reset — VMs rebooted, state cleared");
+      toast.success("Workspace reset — VMs rebooting, all tickets reopened");
       qc.invalidateQueries();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Reset failed";
@@ -90,8 +90,9 @@ export function AppHeader() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Reset workspace to baseline?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Reverts all tickets to Open, clears command outputs, and marks proposed commands
-                  as Pending. Activity drafts are kept but un-submitted.
+                  Reboots hackathon VMs, clears ERP activities, reopens all tickets as Open,
+                  and deletes local commands, hypotheses, and activity drafts in Supabase.
+                  Wait ~2 minutes after reset before SSH.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

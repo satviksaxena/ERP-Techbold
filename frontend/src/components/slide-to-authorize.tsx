@@ -8,10 +8,12 @@ export function SlideToAuthorize({
   onAuthorize,
   disabled,
   label = "Slide to authorize command",
+  commandId,
 }: {
   onAuthorize: () => void | Promise<void>;
   disabled?: boolean;
   label?: string;
+  commandId?: string;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const xRef = useRef(0);
@@ -25,6 +27,16 @@ export function SlideToAuthorize({
   onAuthorizeRef.current = onAuthorize;
   disabledRef.current = disabled;
 
+  const resetKnob = useCallback(() => {
+    xRef.current = 0;
+    setX(0);
+    setDone(false);
+  }, []);
+
+  useEffect(() => {
+    resetKnob();
+  }, [commandId, resetKnob]);
+
   useEffect(() => {
     const el = trackRef.current;
     if (!el) return;
@@ -37,12 +49,6 @@ export function SlideToAuthorize({
       ro.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, []);
-
-  const resetKnob = useCallback(() => {
-    xRef.current = 0;
-    setX(0);
-    setDone(false);
   }, []);
 
   useEffect(() => {
@@ -69,9 +75,13 @@ export function SlideToAuthorize({
         xRef.current = max;
         setX(max);
         setDone(true);
-        void Promise.resolve(onAuthorizeRef.current()).catch(() => {
-          resetKnob();
-        });
+        void Promise.resolve(onAuthorizeRef.current())
+          .catch(() => {
+            resetKnob();
+          })
+          .finally(() => {
+            resetKnob();
+          });
       } else {
         resetKnob();
       }

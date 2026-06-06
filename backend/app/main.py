@@ -93,6 +93,9 @@ def health() -> dict[str, str]:
         ),
         "gemini_configured": str(bool(s.gemini_api_key)),
         "gemini_model": s.gemini_model if s.gemini_api_key else "",
+        "gemini_thinking_model": s.gemini_thinking_model if s.gemini_api_key else "",
+        "gemini_thinking_level": s.gemini_thinking_level if s.gemini_api_key else "",
+        "gemini_ticket_thinking_enabled": str(s.gemini_ticket_thinking_enabled),
         "azure_openai_configured": str(bool(s.azure_openai_api_key and s.azure_openai_endpoint)),
         "azure_openai_deployment": s.azure_openai_deployment,
         "llm_primary": s.llm_primary,
@@ -258,7 +261,7 @@ def get_audit(ticket_id: str | None = None) -> dict[str, Any]:
 def reset_workspace(orch: AgentOrchestrator = Depends(get_orchestrator)) -> dict[str, str]:
     try:
         orch.reset_workspace()
-        return {"ok": "true", "message": "Workspace reset — Phoenix VMs rebooted, local state cleared"}
+        return {"ok": "true", "message": "Workspace reset — VMs rebooted, tickets reopened, local state cleared"}
     except PhoenixError as exc:
         raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)) from exc
 
