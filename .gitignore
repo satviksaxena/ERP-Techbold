@@ -1,0 +1,34 @@
+# Secrets & local config
+.env
+.env.local
+*.pem
+keys/*.pem
+keys/*
+!keys/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv312/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+dist/
+.output/
+.nitro/
+.tanstack/
+
+# OS
+.DS_Store
+.cursor/
+
+# Temp clones
+_tmp/
+
+# Logs
+*.log
+audit.log

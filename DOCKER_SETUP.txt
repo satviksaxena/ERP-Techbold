@@ -1,0 +1,277 @@
+================================================================================
+  AI Service Desk Autopilot — Docker setup on another laptop
+================================================================================
+
+This guide walks you through running the full stack (backend + frontend) with
+Docker Compose on a fresh machine. Estimated time: 15–30 minutes (mostly waiting
+for Docker to build).
+
+--------------------------------------------------------------------------------
+STEP 0 — What you need before you start
+--------------------------------------------------------------------------------
+
+  [ ] Docker Desktop installed and running
+      Download: https://www.docker.com/products/docker-desktop/
+
+  [ ] Git (to clone the repo)
+      Check:  git --version
+
+  [ ] Credentials from the hackathon / team lead:
+      - Phoenix ERP URL + team bearer token
+      - Supabase project URL + anon key + service role key
+      - Gemini API key (or Azure OpenAI endpoint + key)
+      - SSH .pem keys for customer VMs (case1 … case5)
+
+  [ ] Internet access (Docker pulls images; app talks to Phoenix, Supabase, LLM)
+
+--------------------------------------------------------------------------------
+STEP 1 — Clone the repository
+--------------------------------------------------------------------------------
+
+  Open Terminal (Mac/Linux) or PowerShell / Git Bash (Windows).
+
+  git clone <YOUR_REPO_URL>
+  cd Hackathon
+
+  Replace <YOUR_REPO_URL> with the actual GitHub link your team shared.
+
+--------------------------------------------------------------------------------
+STEP 2 — Install Docker Desktop (if not already installed)
+--------------------------------------------------------------------------------
+
+  1. Install Docker Desktop from https://www.docker.com/products/docker-desktop/
+  2. Start Docker Desktop and wait until it says "Docker is running"
+  3. Verify in terminal:
+
+     docker --version
+     docker compose version
+
+  Both commands should print a version number. If "command not found", restart
+  your terminal after installing Docker.
+
+--------------------------------------------------------------------------------
+STEP 3 — Create your environment file (.env)
+--------------------------------------------------------------------------------
+
+  From the project root (the folder that contains docker-compose.yml):
+
+  cp .env.example .env
+
+  Open .env in any text editor and fill in every value. Do NOT commit this file.
+
+  Required variables:
+
+  PHOENIX_API_BASE_URL=https://...
+      Your Phoenix ERP mock URL from Builder Base / Discord.
+
+  PHOENIX_API_TOKEN=...
+      Your team bearer token.
+
+  SUPABASE_URL=https://xxxx.supabase.co
+  SUPABASE_SERVICE_ROLE_KEY=...
+      Backend only — never expose in the browser.
+
+  VITE_SUPABASE_URL=https://xxxx.supabase.co
+  VITE_SUPABASE_PUBLISHABLE_KEY=...
+      Same Supabase project; use the anon / publishable key for the frontend.
+
+  GEMINI_API_KEY=...
+  GEMINI_MODEL=gemini-3.5-flash
+  LLM_PRIMARY=gemini
+      Primary AI for command proposals. (Or use Azure OpenAI vars below.)
+
+  Optional Azure OpenAI (if not using Gemini):
+  AZURE_OPENAI_ENDPOINT=...
+  AZURE_OPENAI_API_KEY=...
+  AZURE_OPENAI_DEPLOYMENT=gpt-5.4-nano
+  LLM_PRIMARY=azure
+
+  SSH (leave as-is for Docker — keys are mounted in Step 4):
+  SSH_KEYS_DIR=/keys
+  SSH_PRIVATE_KEY_PATH=/keys/case1_key.pem
+
+  Frontend → backend (leave as-is when using Docker on localhost):
+  VITE_API_BASE=http://localhost:8000
+
+  Tip — Phoenix running on YOUR laptop (not a remote URL):
+  Set PHOENIX_API_BASE_URL to use host.docker.internal, e.g.:
+  PHOENIX_API_BASE_URL=http://host.docker.internal:8080
+  (Use the actual port your Phoenix mock uses.)
+
+--------------------------------------------------------------------------------
+STEP 4 — Add SSH keys
+--------------------------------------------------------------------------------
+
+  Docker mounts a local folder into the backend container as /keys.
+
+  1. Create the folder if it does not exist:
+
+     mkdir -p tb-hackathon-ssh
+
+  2. Copy the five case keys from Builder Base into that folder:
+
+     tb-hackathon-ssh/case1_key.pem
+     tb-hackathon-ssh/case2_key.pem
+     tb-hackathon-ssh/case3_key.pem
+     tb-hackathon-ssh/case4_key.pem
+     tb-hackathon-ssh/case5_key.pem
+
+  3. Fix permissions (Mac/Linux only — SSH rejects keys that are too open):
+
+     chmod 600 tb-hackathon-ssh/*.pem
+
+  To work on a different case VM, change SSH_PRIVATE_KEY_PATH in .env, e.g.:
+  SSH_PRIVATE_KEY_PATH=/keys/case2_key.pem
+
+  NEVER commit .pem files or .env to git.
+
+--------------------------------------------------------------------------------
+STEP 5 — Apply Supabase database schema (one-time)
+--------------------------------------------------------------------------------
+
+  The app needs tables in Supabase before tickets and commands will work.
+
+  Option A — Run the bootstrap SQL (recommended for demo):
+
+  1. Open your Supabase project dashboard
+  2. Go to SQL Editor
+  3. Open this file from the repo:  supabase/hack_ai_bootstrap.sql
+  4. Paste the full contents into the editor and click Run
+
+  Option B — Run migrations in order via SQL Editor or Supabase CLI:
+  - supabase/migrations/20260606113936_*.sql
+  - supabase/migrations/20260606173000_system_notes.sql
+  - supabase/migrations/20260606180000_ticket_hypotheses.sql
+
+  You only need to do this once per Supabase project.
+
+--------------------------------------------------------------------------------
+STEP 6 — Build and start Docker
+--------------------------------------------------------------------------------
+
+  From the project root:
+
+  docker compose up --build
+
+  First run downloads base images and installs dependencies — it can take
+  several minutes. Leave this terminal open; logs will stream here.
+
+  When ready you should see:
+  - Backend:  Uvicorn running on http://0.0.0.0:8000
+  - Frontend: Vite dev server on port 5173
+
+  To run in the background instead:
+
+  docker compose up --build -d
+
+  To stop later:
+
+  docker compose down
+
+--------------------------------------------------------------------------------
+STEP 7 — Verify everything works
+--------------------------------------------------------------------------------
+
+  Open in your browser:
+
+  Frontend:  http://localhost:5173
+  Backend:   http://localhost:8000/health
+  API docs:  http://localhost:8000/docs
+
+  Quick terminal check:
+
+  curl http://localhost:8000/health
+
+  You should get JSON with a healthy status.
+
+  Optional automated smoke test (from project root):
+
+  chmod +x scripts/docker-smoke.sh
+  ./scripts/docker-smoke.sh
+
+  This builds, starts in detached mode, and waits for the backend health check.
+
+--------------------------------------------------------------------------------
+STEP 8 — Demo flow in the UI
+--------------------------------------------------------------------------------
+
+  1. Open http://localhost:5173
+  2. Click "Sync ERP" in the header (loads tickets from Phoenix → Supabase)
+  3. Open a ticket (e.g. 7001)
+  4. Click "Connect SSH" — should reach the customer VM
+  5. Click "Start AI Analysis" — agent proposes a command
+  6. Slide to authorize the command — output appears in the terminal panel
+  7. Submit activity back to Phoenix ERP when done
+
+--------------------------------------------------------------------------------
+TROUBLESHOOTING
+--------------------------------------------------------------------------------
+
+  Problem: "docker: command not found"
+  Fix:     Install Docker Desktop and restart your terminal.
+
+  Problem: Port 8000 or 5173 already in use
+  Fix:     Stop other apps using those ports, or edit docker-compose.yml ports
+           (e.g. "8001:8000" and update VITE_API_BASE if you change backend port).
+
+  Problem: Backend container exits or health check fails
+  Fix:     docker compose logs backend
+           Check .env values — missing Supabase or Phoenix creds often cause errors.
+
+  Problem: 401 from Phoenix ERP
+  Fix:     Verify PHOENIX_API_TOKEN and PHOENIX_API_BASE_URL in .env
+
+  Problem: Empty ticket list after opening the app
+  Fix:     Click "Sync ERP". Confirm Supabase schema was applied (Step 5).
+
+  Problem: SSH connect fails
+  Fix:     - Keys exist in tb-hackathon-ssh/ with correct names
+           - chmod 600 on .pem files (Mac/Linux)
+           - SSH_PRIVATE_KEY_PATH matches the key file inside /keys
+           - VM is reachable from your network
+
+  Problem: Backend cannot reach Phoenix when Phoenix runs on your laptop
+  Fix:     Use host.docker.internal in PHOENIX_API_BASE_URL (see Step 3).
+
+  Problem: Supabase errors in browser or backend
+  Fix:     Confirm migration/bootstrap SQL ran and VITE_SUPABASE_* match your project.
+
+  Problem: Frontend loads but API calls fail
+  Fix:     Ensure VITE_API_BASE=http://localhost:8000 in .env and restart:
+           docker compose down && docker compose up --build
+
+  View logs:
+  docker compose logs -f
+  docker compose logs backend
+  docker compose logs frontend
+
+  Rebuild from scratch (if something is stuck):
+  docker compose down
+  docker compose build --no-cache
+  docker compose up
+
+--------------------------------------------------------------------------------
+QUICK REFERENCE — Ports and URLs
+--------------------------------------------------------------------------------
+
+  Service    Host URL                      Container port
+  -------    --------------------------    --------------
+  Frontend   http://localhost:5173         5173
+  Backend    http://localhost:8000         8000
+  SSH keys   ./tb-hackathon-ssh  →  /keys   (read-only mount)
+
+--------------------------------------------------------------------------------
+SECURITY REMINDER
+--------------------------------------------------------------------------------
+
+  Do NOT share or commit:
+  - .env
+  - *.pem SSH keys
+  - Supabase service role key
+
+  Only share this repo + .env.example. Give secrets to teammates through a
+  secure channel (Discord DM, 1Password, etc.).
+
+================================================================================
+  End of setup guide
+================================================================================

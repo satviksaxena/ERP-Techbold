@@ -1,0 +1,9 @@
+node_modules
+dist
+.output
+.nitro
+.tanstack
+.git
+.env
+.env.local
+.npm-cache
