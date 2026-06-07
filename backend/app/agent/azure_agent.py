@@ -152,7 +152,9 @@ Commands and outputs:
 JSON fields: summary, root_cause, actions_taken, commands_summary, validation_result
 
 Rules:
-- actions_taken: ONLY commands that appear above as Approved/Edited — never invent steps not yet run
+- Every single JSON field MUST be a flat string (do NOT use arrays, lists, or dictionary objects for any field).
+- actions_taken: ONLY commands that appear above as Approved/Edited, formatted as a flat, newline-separated or bulleted string (no lists or arrays). Never invent steps not yet run.
+- commands_summary: a flat comma-separated string listing only command names/classes (no nested JSON/lists).
 - validation_result: cite public-test.sh if executed; else "Validation pending"
 """
 

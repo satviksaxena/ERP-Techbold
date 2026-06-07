@@ -296,6 +296,8 @@ class AgentOrchestrator:
             return None
 
         existing = self.store.list_commands(ticket_uuid)
+        if self._public_test_done(existing):
+            return None
         pending = [c for c in existing if c.get("human_status") == "Pending"]
         title = h.get("title") or f"path {idx + 1}"
 
@@ -637,6 +639,8 @@ class AgentOrchestrator:
         hypothesis: dict[str, Any],
         existing: list[dict[str, Any]],
     ) -> dict[str, str] | None:
+        if self._public_test_done(existing):
+            return None
         verifier_rec = self._current_verifier_recommend(ticket["id"])
         planned = next_plan_step(
             hypothesis, existing, self.safety, verifier_recommend=verifier_rec
