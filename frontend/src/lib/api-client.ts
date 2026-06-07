@@ -102,11 +102,14 @@ export const api = {
       { method: "POST", body: JSON.stringify({ index }) },
     ),
 
-  approveCommand: (commandId: string, commandText?: string) =>
+  approveCommand: (commandId: string, commandText?: string, options?: { autoApproved?: boolean }) =>
     request<{ ok: boolean; command: unknown }>(`/api/commands/${commandId}/approve`, {
       method: "POST",
       timeoutMs: 120_000,
-      body: JSON.stringify({ command_text: commandText ?? null }),
+      body: JSON.stringify({
+        command_text: commandText ?? null,
+        auto_approved: options?.autoApproved ?? false,
+      }),
     }),
 
   rejectCommand: (commandId: string) =>

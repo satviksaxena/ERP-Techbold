@@ -26,7 +26,7 @@ function actionTone(action: string): string {
   if (action.includes("failed") || action.includes("blocked") || action.includes("rejected")) {
     return "text-danger";
   }
-  if (action.includes("executed") || action.includes("submitted") || action.includes("passed")) {
+  if (action.includes("executed") || action.includes("submitted") || action.includes("passed") || action.includes("auto_approved")) {
     return "text-safe";
   }
   if (action.includes("retry") || action.includes("selected")) {
@@ -144,10 +144,22 @@ function isFixCommand(text: string): boolean {
   );
 }
 
+const HACKATHON_GRADING_CODES = new Set(["7001", "7002"]);
+
+export function isHackathonGradingTicket(
+  ticket?: { ticket_code?: string | null },
+): boolean {
+  return HACKATHON_GRADING_CODES.has(String(ticket?.ticket_code ?? ""));
+}
+
 function usesPublicTestGrading(
   commands: { command_text?: string }[],
+  ticket?: { ticket_code?: string | null },
 ): boolean {
-  return commands.some((c) => (c.command_text || "").toLowerCase().includes("public-test"));
+  return (
+    isHackathonGradingTicket(ticket) ||
+    commands.some((c) => (c.command_text || "").toLowerCase().includes("public-test"))
+  );
 }
 
 /** Matches backend _incident_resolved — hackathon tickets require latest public-test pass. */
@@ -155,7 +167,7 @@ export function incidentResolved(
   commands: { command_text?: string; human_status?: string; output_logs?: string | null }[],
   ticket?: { status?: string | null; ticket_code?: string | null },
 ): { passed: boolean; detail?: string } {
-  const hackathonGrading = usesPublicTestGrading(commands);
+  const hackathonGrading = usesPublicTestGrading(commands, ticket);
 
   if (hackathonGrading) {
     const pub = publicTestPassed(commands);

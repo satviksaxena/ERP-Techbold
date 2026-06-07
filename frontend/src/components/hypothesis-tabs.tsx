@@ -4,6 +4,7 @@ import { api, type HypothesisItem } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { CollapsiblePanel } from "@/components/collapsible-panel";
 import type { AiCommand } from "@/lib/types";
+import { publicTestPassed } from "@/components/audit-trail";
 import { Lightbulb, Loader2, Brain } from "lucide-react";
 import { toast } from "sonner";
 
@@ -113,7 +114,7 @@ export function HypothesisTabs({
     );
   }
 
-  const summary = pathSummary(hypotheses, selectedIndex, isLoading, isFetching, validationPassed);
+  const summary = pathSummary(hypotheses, selectedIndex, isLoading, isFetching, validationPassed, commands);
 
   if (isLoading || (!hypotheses.length && isFetching)) {
     return (
@@ -267,9 +268,12 @@ function pathSummary(
   isLoading: boolean,
   isFetching: boolean,
   validationPassed: boolean,
+  commands: AiCommand[],
 ): string {
   if (validationPassed) {
-    return "Validation passed · public-test.sh exit 0";
+    return publicTestPassed(commands).passed
+      ? "Validation passed · public-test.sh exit 0"
+      : "Validation passed · post-fix checks succeeded";
   }
   if (isLoading || (!hypotheses.length && isFetching)) {
     return "Generating solution pathways with thinking model…";

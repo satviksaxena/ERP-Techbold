@@ -1,0 +1,74 @@
+================================================================================
+  SHARE PACKAGE — Run with Docker (recipients)
+================================================================================
+
+Give teammates:
+  1. This repository (or a zip)
+  2. A filled-in .env file (secrets — share securely, not in git)
+  3. The five SSH keys (case1_key.pem … case5_key.pem)
+
+They do NOT need Python, Bun, or Node installed — only Docker Desktop.
+
+--------------------------------------------------------------------------------
+ONE-TIME SETUP (5 minutes)
+--------------------------------------------------------------------------------
+
+  1. Install Docker Desktop and start it
+     https://www.docker.com/products/docker-desktop/
+
+  2. Clone / unzip the project and cd into it
+
+  3. Save the shared .env file in the project root (same folder as docker-compose.yml)
+
+  4. Create folder tb-hackathon-ssh/ and copy all five .pem keys into it:
+
+       tb-hackathon-ssh/case1_key.pem
+       tb-hackathon-ssh/case2_key.pem
+       tb-hackathon-ssh/case3_key.pem
+       tb-hackathon-ssh/case4_key.pem
+       tb-hackathon-ssh/case5_key.pem
+
+     Mac/Linux:
+       chmod 600 tb-hackathon-ssh/*.pem
+
+  5. In Supabase SQL Editor, run once:  supabase/hack_ai_bootstrap.sql
+
+--------------------------------------------------------------------------------
+RUN
+--------------------------------------------------------------------------------
+
+  docker compose up --build
+
+  Or:
+
+  ./scripts/docker-up.sh
+
+  Open:
+    Frontend  http://localhost:5173
+    Backend   http://localhost:8000/health
+
+  Stop:
+    docker compose down
+
+--------------------------------------------------------------------------------
+.env MUST USE DOCKER SSH PATHS
+--------------------------------------------------------------------------------
+
+  SSH_KEYS_DIR=/keys
+  SSH_PRIVATE_KEY_PATH=/keys/case1_key.pem
+
+  (Not laptop paths like /Users/you/...)
+
+  VITE_API_BASE=http://localhost:8000
+
+--------------------------------------------------------------------------------
+WHAT DOCKER RUNS
+--------------------------------------------------------------------------------
+
+  backend   FastAPI on port 8000  (Python 3.12)
+  frontend  Vite dev on port 5173
+
+  External (cloud — configured via .env):
+    Supabase, Phoenix ERP, Gemini / Azure OpenAI, customer VMs via SSH
+
+================================================================================

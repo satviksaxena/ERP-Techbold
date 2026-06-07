@@ -19,6 +19,30 @@ def is_hackathon_grading_ticket(ticket: dict[str, Any]) -> bool:
     """Only tickets with a known public-test grading target use hackathon progression."""
     return str(ticket.get("ticket_code") or "") in DEFAULT_SERVICE_BY_TICKET
 
+
+def uses_hackathon_service_progression(ticket: dict[str, Any]) -> bool:
+    """Systemd enable + public-test grading — not upload/disk/ERP-style tickets on the same code."""
+    if not is_hackathon_grading_ticket(ticket):
+        return False
+    text = f"{ticket.get('title') or ''} {ticket.get('report_text') or ''}".lower()
+    non_service_markers = (
+        "upload",
+        "permission",
+        "denied",
+        "chown",
+        "chmod",
+        "read-only",
+        "readonly",
+        "erp",
+        "database",
+        "disk space",
+        "inode",
+        "nginx",
+        "portal",
+        "orders fail",
+    )
+    return not any(marker in text for marker in non_service_markers)
+
 SERVICE_DISCOVERY_COMMANDS: list[tuple[str, str, str]] = [
     (
         "Problem Analyzer",
@@ -231,6 +255,14 @@ def _proposal(agent: str, command: str, diff: str, safety: SafetyLayer) -> dict[
     }
 
 
+def _public_test_executed(commands: list[dict[str, Any]]) -> bool:
+    return any(
+        PUBLIC_TEST_COMMAND in (c.get("command_text") or "")
+        and c.get("human_status") in ("Approved", "Edited")
+        for c in commands
+    )
+
+
 def next_hackathon_command(
     ticket: dict[str, Any],
     commands: list[dict[str, Any]],
@@ -238,6 +270,30 @@ def next_hackathon_command(
 ) -> dict[str, str] | None:
     """Deterministic next step for START hackathon VMs when LLM proposals stall."""
     if not is_hackathon_grading_ticket(ticket):
+        return None
+
+    # Upload/disk-style hackathon tickets — validate after chown/chmod fixes, not systemd enable.
+    if not uses_hackathon_service_progression(ticket):
+        from app.agent.plan_resolver import last_fix_index
+
+        if last_fix_index(commands) < 0 or public_test_passed(commands):
+            return None
+        if last_public_test_failed(commands):
+            if fix_applied_after_last_public_test(commands):
+                return _proposal(
+                    "Problem Solver",
+                    PUBLIC_TEST_COMMAND,
+                    "+ re-run hackathon validation after post-failure fix",
+                    safety,
+                )
+            return None
+        if not _public_test_executed(commands):
+            return _proposal(
+                "Problem Solver",
+                PUBLIC_TEST_COMMAND,
+                "+ hackathon validation after successful fix",
+                safety,
+            )
         return None
 
     executed = _executed_texts(commands)

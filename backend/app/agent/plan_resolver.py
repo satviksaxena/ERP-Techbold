@@ -171,6 +171,42 @@ def _command_succeeded(output_logs: str | None) -> bool:
     return True
 
 
+def plan_step_done(commands: list[dict[str, Any]], step: PlanStep) -> bool:
+    """Fix steps count as done only on success; diagnostics count on any execution."""
+    normalized = step.command_text.strip().lower()
+    if not normalized:
+        return False
+    primary = normalized.split("|")[0].split("&&")[0].strip()
+    matched: list[dict[str, Any]] = []
+    for cmd in commands:
+        if cmd.get("human_status") not in ("Approved", "Edited"):
+            continue
+        executed = (cmd.get("command_text") or "").strip().lower()
+        if executed == normalized or (primary and primary in executed) or (executed and executed in normalized):
+            matched.append(cmd)
+    if not matched:
+        return False
+    if step.intent == "fix":
+        return any(_command_succeeded(c.get("output_logs")) for c in matched)
+    return True
+
+
+def fix_step_failed(commands: list[dict[str, Any]], step: PlanStep) -> bool:
+    """True when this fix step was attempted and did not succeed."""
+    if step.intent != "fix":
+        return False
+    normalized = step.command_text.strip().lower()
+    primary = normalized.split("|")[0].split("&&")[0].strip()
+    for cmd in commands:
+        if cmd.get("human_status") not in ("Approved", "Edited"):
+            continue
+        executed = (cmd.get("command_text") or "").strip().lower()
+        if executed == normalized or (primary and primary in executed) or (executed and executed in normalized):
+            if not _command_succeeded(cmd.get("output_logs")):
+                return True
+    return False
+
+
 def last_fix_index(commands: list[dict[str, Any]]) -> int:
     for i in range(len(commands) - 1, -1, -1):
         cmd = commands[i]
@@ -273,7 +309,9 @@ def next_plan_step(
     for step in build_plan(hyp):
         if step.intent == "validate":
             continue
-        if command_already_run(commands, step.command_text):
+        if plan_step_done(commands, step):
+            continue
+        if fix_step_failed(commands, step):
             continue
         if not is_valid_shell_command(step.command_text):
             continue
@@ -283,6 +321,77 @@ def next_plan_step(
         if not result.allowed:
             continue
         return _proposal_from_step(step, safety)
+    return None
+
+
+def diagnostics_complete(hypothesis: dict[str, Any], commands: list[dict[str, Any]]) -> bool:
+    """True when every diagnostic step on this pathway has already been executed."""
+    hyp = ensure_plan(hypothesis)
+    for step in build_plan(hyp):
+        if step.intent in ("fix", "validate"):
+            continue
+        if not plan_step_done(commands, step):
+            return False
+    return True
+
+
+def upload_paths_needing_chown(commands: list[dict[str, Any]]) -> list[str]:
+    """Paths seen as root-owned from stat/ls during upload-permission investigations."""
+    import re
+
+    targets: list[str] = []
+    for cmd in commands:
+        if cmd.get("human_status") not in ("Approved", "Edited"):
+            continue
+        text = (cmd.get("command_text") or "").lower()
+        if not any(k in text for k in ("stat", "ls -l", "ls -ld", "ls -la")):
+            continue
+        output = cmd.get("output_logs") or ""
+        for line in output.splitlines():
+            if "root:root" not in line:
+                continue
+            ll = line.lower()
+            if "upload" not in ll and "portal" not in ll:
+                continue
+            match = re.search(r"(/\S+)$", line.strip())
+            if match:
+                path = match.group(1)
+                if path not in targets:
+                    targets.append(path)
+    return targets
+
+
+def permission_fixup_fallback(
+    ticket: dict[str, Any],
+    commands: list[dict[str, Any]],
+    safety: SafetyLayer,
+) -> dict[str, str] | None:
+    """Direct chown on known upload paths when broad find/chown fixes failed."""
+    text = f"{ticket.get('title') or ''} {ticket.get('report_text') or ''}".lower()
+    if not any(k in text for k in ("upload", "permission", "denied")):
+        return None
+    for path in upload_paths_needing_chown(commands):
+        fix_cmd = f"sudo chown -R www-data:www-data {path}"
+        if any(
+            fix_cmd in (cmd.get("command_text") or "")
+            and cmd.get("human_status") in ("Approved", "Edited")
+            and _command_succeeded(cmd.get("output_logs"))
+            for cmd in commands
+        ):
+            continue
+        result = safety.evaluate(fix_cmd)
+        if not result.allowed:
+            continue
+        return {
+            "agent_name": "Problem Solver",
+            "command_text": fix_cmd,
+            "script_diff": f"+ fix ownership on {path} (evidence-based fallback)",
+            "safety_status": result.status,
+            "human_status": "Pending",
+            "output_logs": "",
+            "agent_reasoning": "Stat output showed root:root on upload path — apply targeted chown.",
+            "plan_intent": "fix",
+        }
     return None
 
 
@@ -300,16 +409,26 @@ def next_plan_across_hypotheses(
 
     indices = list(range(len(hypotheses)))
     if prefer_switch and len(indices) > 1:
-        indices = [i for i in indices if i != selected_index] + [selected_index]
+        ready = [i for i in indices if i != selected_index and diagnostics_complete(hypotheses[i], commands)]
+        rest = [i for i in indices if i not in ready and i != selected_index]
+        indices = ready + rest + [selected_index]
 
     for idx in indices:
+        hyp = hypotheses[idx]
+        rec = verifier_recommend
+        if prefer_switch and idx != selected_index:
+            rec = "apply_fix" if diagnostics_complete(hyp, commands) else "continue_diagnose"
+        elif prefer_switch and idx == selected_index and diagnostics_complete(hyp, commands):
+            rec = "apply_fix"
         proposal = next_plan_step(
-            hypotheses[idx],
+            hyp,
             commands,
             safety,
-            verifier_recommend=verifier_recommend,
+            verifier_recommend=rec,
         )
         if proposal:
+            if prefer_switch and idx != selected_index:
+                proposal = {**proposal, "from_path_switch": "1"}
             return proposal, idx
     return None, None
 
