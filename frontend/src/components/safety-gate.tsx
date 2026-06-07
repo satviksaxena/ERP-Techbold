@@ -18,7 +18,13 @@ const safetyStyle: Record<string, { ring: string; icon: typeof ShieldCheck; text
   Blocked: { ring: "ring-danger/60", icon: ShieldX,        text: "text-danger" },
 };
 
-export function SafetyGate({ command }: { command: AiCommand }) {
+export function SafetyGate({
+  command,
+  autoRunEnabled = false,
+}: {
+  command: AiCommand;
+  autoRunEnabled?: boolean;
+}) {
   const [edited, setEdited] = useState(command.command_text);
   const [busy, setBusy] = useState(false);
   const qc = useQueryClient();
@@ -34,6 +40,7 @@ export function SafetyGate({ command }: { command: AiCommand }) {
     isPublicTest &&
     (command.script_diff || "").toLowerCase().includes("re-run hackathon validation");
   const isEdited = useMemo(() => edited.trim() !== command.command_text.trim(), [edited, command.command_text]);
+  const requiresManualApproval = autoRunEnabled;
 
   async function waitForNextCommand(ticketId: string) {
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -136,9 +143,18 @@ export function SafetyGate({ command }: { command: AiCommand }) {
           </span>
         </div>
         <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-          command gate · human-in-the-loop
+          {requiresManualApproval ? "fix/validation · approval required" : "command gate · human-in-the-loop"}
         </span>
       </div>
+
+      {requiresManualApproval && (
+        <div className="rounded-md border border-primary/30 bg-primary/5 p-3 mb-3">
+          <p className="text-[12px] text-muted-foreground leading-relaxed">
+            Auto-run diagnostics is ON — this command changes system state or validates the fix, so it still
+            needs your slide-to-authorize.
+          </p>
+        </div>
+      )}
 
       {(command as AiCommand & { agent_reasoning?: string }).agent_reasoning && (
         <div className="rounded-md border border-primary/30 bg-primary/5 p-3 mb-3">

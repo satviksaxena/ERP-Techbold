@@ -19,18 +19,20 @@ from app.agent.hackathon_commands import (
     next_hackathon_command,
     public_test_passed,
     resolve_service_name,
+    uses_hackathon_service_progression,
 )
 from app.agent.hypothesis_generator import HypothesisGenerator
 from app.agent.hypothesis_ranker import rerank_hypotheses
 from app.agent.llm_schemas import PUBLIC_TEST_COMMAND
 from app.agent.phases import PipelinePhase, agent_for_phase, infer_phase
-from app.agent.command_intent import is_fix_command
+from app.agent.command_intent import can_auto_approve, is_fix_command
 from app.agent.plan_resolver import (
     next_plan_across_hypotheses,
     next_plan_step,
     next_universal_baseline,
     next_validation_step,
     needs_validation,
+    permission_fixup_fallback,
     validation_succeeded_after_fix,
 )
 from app.agent.reflexion import command_already_failed, reflexion_context
@@ -501,6 +503,16 @@ class AgentOrchestrator:
         ticket_uuid = ticket["id"]
         verifier_rec = self._current_verifier_recommend(ticket_uuid)
 
+        if verifier_rec == "switch_path":
+            hyp_data = self.hypothesis_store.get(ticket_uuid) or {}
+            hypotheses = hyp_data.get("hypotheses") or []
+            selected = hyp_data.get("selected_index", 0)
+            switched = self._try_hypothesis_switch(
+                ticket_uuid, hypotheses, selected, existing, verifier_rec
+            )
+            if switched:
+                return switched
+
         if is_hackathon_grading_ticket(ticket) and last_public_test_failed(existing):
             hackathon = next_hackathon_command(ticket, existing, self.safety)
             if hackathon:
@@ -517,6 +529,12 @@ class AgentOrchestrator:
             )
             if val:
                 return val
+
+        perm_fix = permission_fixup_fallback(ticket, existing, self.safety)
+        if perm_fix:
+            filtered = self._gate_proposal(perm_fix, ticket_uuid, existing)
+            if filtered:
+                return filtered
 
         if hypothesis:
             planned = next_plan_step(
@@ -558,15 +576,26 @@ class AgentOrchestrator:
                     selected_index=new_idx,
                     title=(hypotheses[new_idx].get("title") or "")[:80],
                 )
+                if planned.get("plan_intent") == "fix":
+                    self.hypothesis_store.update_pipeline_state(
+                        ticket_uuid,
+                        verifier={
+                            "recommend": "apply_fix",
+                            "summary": "Switched pathway — diagnostics complete, ready to apply fix.",
+                            "confidence": "medium",
+                            "hypothesis_supported": True,
+                        },
+                    )
             filtered = self._gate_proposal(planned, ticket_uuid, existing)
             if filtered:
                 return filtered
 
-        hackathon = next_hackathon_command(ticket, existing, self.safety)
-        if hackathon:
-            filtered = self._gate_proposal(hackathon, ticket_uuid, existing)
-            if filtered:
-                return filtered
+        if is_hackathon_grading_ticket(ticket):
+            hackathon = next_hackathon_command(ticket, existing, self.safety)
+            if hackathon:
+                filtered = self._gate_proposal(hackathon, ticket_uuid, existing)
+                if filtered:
+                    return filtered
 
         if hypothesis:
             fix = self._command_from_fix_strategy(hypothesis)
@@ -576,7 +605,31 @@ class AgentOrchestrator:
                     if filtered:
                         return filtered
 
-        return self._gate_proposal(next_universal_baseline(existing, self.safety), ticket_uuid, existing)
+        baseline = self._gate_proposal(next_universal_baseline(existing, self.safety), ticket_uuid, existing)
+        if baseline:
+            return baseline
+
+        # Wrong pathway exhausted — try alternate hypotheses with diagnostics already complete.
+        hyp_data = self.hypothesis_store.get(ticket_uuid) or {}
+        hypotheses = hyp_data.get("hypotheses") or []
+        if len(hypotheses) > 1:
+            switched = self._try_hypothesis_switch(
+                ticket_uuid,
+                hypotheses,
+                hyp_data.get("selected_index", 0),
+                existing,
+                verifier_rec or "switch_path",
+            )
+            if switched:
+                return switched
+
+        perm_fix = permission_fixup_fallback(ticket, existing, self.safety)
+        if perm_fix:
+            filtered = self._gate_proposal(perm_fix, ticket_uuid, existing)
+            if filtered:
+                return filtered
+
+        return None
 
     def _propose_next_for_path(
         self,
@@ -611,20 +664,70 @@ class AgentOrchestrator:
         cmd_text = (proposal.get("command_text") or "").strip()
         if command_already_failed(existing, cmd_text):
             return None
-        is_fix = is_fix_command(cmd_text, plan_intent=proposal.get("plan_intent")) or self._looks_like_fix(
-            cmd_text
-        )
+        plan_intent = proposal.get("plan_intent")
+        if plan_intent == "diagnostic":
+            is_fix = False
+        elif plan_intent == "fix":
+            is_fix = True
+        else:
+            is_fix = is_fix_command(cmd_text, plan_intent=plan_intent if isinstance(plan_intent, str) else None) or self._looks_like_fix(
+                cmd_text
+            )
         if is_fix:
             verifier_rec = self._current_verifier_recommend(ticket_uuid)
             if verifier_rec in ("continue_diagnose", "switch_path"):
-                self.audit.record(
-                    "verifier_blocked_fix",
-                    ticket_id=ticket_uuid,
-                    command=cmd_text[:120],
-                    recommend=verifier_rec,
-                )
-                return None
+                if verifier_rec == "switch_path" and proposal.get("from_path_switch"):
+                    pass
+                else:
+                    self.audit.record(
+                        "verifier_blocked_fix",
+                        ticket_id=ticket_uuid,
+                        command=cmd_text[:120],
+                        recommend=verifier_rec,
+                    )
+                    return None
         return proposal
+
+    def _try_hypothesis_switch(
+        self,
+        ticket_uuid: str,
+        hypotheses: list[dict[str, Any]],
+        selected_index: int,
+        existing: list[dict[str, Any]],
+        verifier_rec: str,
+    ) -> dict[str, str] | None:
+        """Auto-switch pathway when verifier recommends switch_path."""
+        if not hypotheses:
+            return None
+        planned, new_idx = next_plan_across_hypotheses(
+            hypotheses,
+            selected_index,
+            existing,
+            self.safety,
+            verifier_recommend=verifier_rec,
+            prefer_switch=True,
+        )
+        if not planned:
+            return None
+        if new_idx is not None and new_idx != selected_index:
+            self.hypothesis_store.select(ticket_uuid, new_idx)
+            self.audit.record(
+                "hypothesis_auto_switched",
+                ticket_id=ticket_uuid,
+                selected_index=new_idx,
+                title=(hypotheses[new_idx].get("title") or "")[:80],
+            )
+            if planned.get("plan_intent") == "fix":
+                self.hypothesis_store.update_pipeline_state(
+                    ticket_uuid,
+                    verifier={
+                        "recommend": "apply_fix",
+                        "summary": "Switched pathway — diagnostics complete, ready to apply fix.",
+                        "confidence": "medium",
+                        "hypothesis_supported": True,
+                    },
+                )
+        return self._gate_proposal(planned, ticket_uuid, existing)
 
     def _filter_proposal(
         self,
@@ -645,6 +748,8 @@ class AgentOrchestrator:
         if self._is_public_test(proposal):
             if self._public_test_done(existing):
                 return None
+            if proposal.get("plan_intent") == "validate":
+                return proposal
             if ticket:
                 if not self._canonical_fix_ready(ticket, existing) and not fix_applied_after_last_public_test(
                     existing
@@ -659,6 +764,8 @@ class AgentOrchestrator:
         return proposal
 
     def _canonical_fix_ready(self, ticket: dict[str, Any], commands: list[dict[str, Any]]) -> bool:
+        if is_hackathon_grading_ticket(ticket) and not uses_hackathon_service_progression(ticket):
+            return bool(self._executed_fix_commands(commands))
         service = resolve_service_name(ticket, commands)
         if not service:
             return bool(self._executed_fix_commands(commands))
@@ -708,7 +815,7 @@ class AgentOrchestrator:
         sys_info = self.store.get_system_info(ticket["id"])
         hypothesis_ctx = self._selected_hypothesis_context(ticket["id"])
 
-        # Deterministic hackathon path first — only for tickets 7001/7002 with public-test grading.
+        # Deterministic hackathon path — systemd enable or post-fix validation.
         if is_hackathon_grading_ticket(ticket):
             pre = next_hackathon_command(ticket, existing, self.safety)
             if pre:
@@ -887,9 +994,106 @@ class AgentOrchestrator:
 
         return next_universal_baseline(existing, self.safety)
 
+    def _recover_stalled_pipeline(
+        self,
+        ticket: dict[str, Any],
+        existing: list[dict[str, Any]],
+        hypothesis: dict[str, Any] | None,
+    ) -> dict[str, str] | None:
+        """Last-resort recovery when the main resolver returns nothing."""
+        ticket_uuid = ticket["id"]
+
+        if hypothesis and needs_validation(existing, hypothesis):
+            val = next_validation_step(hypothesis, existing, self.safety)
+            if val:
+                filtered = self._filter_proposal(val, existing)
+                if filtered:
+                    self.audit.record("pipeline_stall_recovered", ticket_id=ticket_uuid, recovery="validation")
+                    return filtered
+
+        if is_hackathon_grading_ticket(ticket) and not uses_hackathon_service_progression(ticket):
+            hackathon = next_hackathon_command(ticket, existing, self.safety)
+            if hackathon:
+                filtered = self._filter_proposal(hackathon, existing)
+                if filtered:
+                    self.audit.record("pipeline_stall_recovered", ticket_id=ticket_uuid, recovery="hackathon_validate")
+                    return filtered
+
+        if self._executed_fix_commands(existing) and not public_test_passed(existing):
+            safety = self.safety.evaluate(PUBLIC_TEST_COMMAND)
+            proposal = {
+                "agent_name": "Problem Solver",
+                "command_text": PUBLIC_TEST_COMMAND,
+                "script_diff": "+ hackathon validation after successful fix (stall recovery)",
+                "safety_status": safety.status,
+                "human_status": "Pending",
+                "output_logs": "",
+                "agent_reasoning": "Fix applied — re-run validation to confirm resolution.",
+                "plan_intent": "validate",
+            }
+            filtered = self._filter_proposal(proposal, existing)
+            if filtered:
+                self.audit.record("pipeline_stall_recovered", ticket_id=ticket_uuid, recovery="public_test")
+                return filtered
+
+        return None
+
     def _next_unrun_diagnostic(self, existing: list[dict[str, Any]]) -> dict[str, str] | None:
         """Pick the next curated diagnostic that has not been executed yet."""
         return next_universal_baseline(existing, self.safety)
+
+    def _realign_pending_gate(self, ticket_uuid: str) -> bool:
+        """Drop stale pending commands when the resolver would queue a higher-priority step."""
+        ticket = self.store.get_ticket(ticket_uuid)
+        if not ticket:
+            return False
+
+        commands = self.store.list_commands(ticket_uuid)
+        pending = [c for c in commands if c.get("human_status") == "Pending"]
+        if not pending:
+            return False
+
+        if self._incident_resolved(commands, ticket_uuid):
+            for cmd in pending:
+                self.store.update_command(cmd["id"], human_status="Rejected")
+                self.audit.record(
+                    "stale_pending_rejected",
+                    ticket_id=ticket_uuid,
+                    command=cmd.get("command_text"),
+                    reason="incident_resolved",
+                )
+            return True
+
+        hypothesis = self._selected_hypothesis(ticket_uuid)
+        next_cmd = self._resolve_next_command(ticket, commands, hypothesis)
+        if not next_cmd:
+            return False
+
+        pending_cmd = pending[-1]
+        pending_text = (pending_cmd.get("command_text") or "").strip()
+        next_text = (next_cmd.get("command_text") or "").strip()
+        if pending_text == next_text:
+            return False
+
+        replace = False
+        if self._is_public_test(next_cmd) and not self._is_public_test(pending_cmd):
+            replace = True
+        elif next_cmd.get("plan_intent") == "validate" and pending_cmd.get("plan_intent") != "validate":
+            replace = True
+        elif is_hackathon_grading_ticket(ticket) and self._is_public_test(next_cmd):
+            replace = True
+
+        if not replace:
+            return False
+
+        self.store.update_command(pending_cmd["id"], human_status="Rejected")
+        self.audit.record(
+            "stale_pending_replaced",
+            ticket_id=ticket_uuid,
+            rejected=pending_text[:120],
+            replacement=next_text[:120],
+        )
+        return True
 
     def _ensure_next_pending_command(self, ticket_uuid: str) -> dict[str, Any] | None:
         """Queue the next proposal when the command gate is idle."""
@@ -898,6 +1102,8 @@ class AgentOrchestrator:
             return None
 
         existing = self.store.list_commands(ticket_uuid)
+        if self._realign_pending_gate(ticket_uuid):
+            existing = self.store.list_commands(ticket_uuid)
         pending = [c for c in existing if c.get("human_status") == "Pending"]
         if pending:
             return pending[0]
@@ -906,6 +1112,8 @@ class AgentOrchestrator:
 
         hypothesis = self._selected_hypothesis(ticket_uuid)
         next_cmd = self._resolve_next_command(ticket, existing, hypothesis)
+        if not next_cmd:
+            next_cmd = self._recover_stalled_pipeline(ticket, existing, hypothesis)
         if not next_cmd:
             self.audit.record("next_command_empty", ticket_id=ticket_uuid)
             return None
@@ -1010,7 +1218,12 @@ class AgentOrchestrator:
         )
         if any(m in t for m in fix_markers):
             return True
-        if ">" in t and any(p in t for p in ("/etc/", "/var/", "/opt/")):
+        # Output redirection to a config path — not stderr redirects like 2>/dev/null
+        import re
+
+        if re.search(r"(?<![0-9])>\s*/(?:etc|var|opt|srv|home)/", t):
+            return True
+        if re.search(r">>\s*/(?:etc|var|opt|srv|home)/", t):
             return True
         return False
 
@@ -1032,6 +1245,9 @@ class AgentOrchestrator:
         """Propose public-test only after the canonical grading service is enabled."""
         if public_test_passed(commands):
             return False
+
+        if is_hackathon_grading_ticket(ticket) and not uses_hackathon_service_progression(ticket):
+            return bool(self._executed_fix_commands(commands))
 
         service = resolve_service_name(ticket, commands)
         if not service:
@@ -1113,6 +1329,8 @@ Previous commands and outputs are in the conversation."""
         self,
         command_id: str,
         edited_command: str | None = None,
+        *,
+        auto_approved: bool = False,
     ) -> tuple[dict[str, Any], str, bool]:
         cmd = self.store.get_command(command_id)
         if not cmd:
@@ -1120,11 +1338,24 @@ Previous commands and outputs are in the conversation."""
         if cmd.get("human_status") != "Pending":
             raise ValueError("Command already processed")
 
+        if auto_approved and edited_command:
+            raise ValueError("Auto-approve cannot use an edited command")
+
         command_text = (edited_command or cmd["command_text"]).strip()
         safety = self.safety.evaluate(command_text)
         if not safety.allowed:
             self.store.update_command(command_id, safety_status="Blocked", human_status="Rejected")
             raise ValueError(f"Command blocked: {safety.reason}")
+
+        plan_intent = cmd.get("plan_intent")
+        if auto_approved and not can_auto_approve(
+            command_text,
+            plan_intent=plan_intent if isinstance(plan_intent, str) else None,
+            safety_allowed=safety.allowed,
+        ):
+            raise ValueError(
+                "Auto-approve only applies to read-only diagnostics — slide to authorize this command"
+            )
 
         ticket_uuid = cmd["ticket_id"]
         ticket = self.store.get_ticket(ticket_uuid)
@@ -1132,6 +1363,13 @@ Previous commands and outputs are in the conversation."""
         key_path = self._ssh_key_for(ticket_uuid, ticket, sys_info)
 
         human_status = "Edited" if edited_command and edited_command.strip() != cmd["command_text"].strip() else "Approved"
+
+        if auto_approved:
+            self.audit.record(
+                "command_auto_approved",
+                ticket_id=ticket_uuid,
+                command=command_text,
+            )
 
         output = ""
         if sys_info and sys_info.get("host_ip"):
@@ -1157,6 +1395,7 @@ Previous commands and outputs are in the conversation."""
                     ticket_id=ticket_uuid,
                     command=command_text,
                     exit_code=result.exit_code,
+                    auto_approved=auto_approved,
                 )
             except (SSHError, Exception) as exc:
                 output = f"+ execution failed\n{exc}"
@@ -1305,7 +1544,25 @@ Previous commands and outputs are in the conversation."""
                     "command": cmd.get("command_text"),
                 }
 
+        if pending and not validation_passed and self._realign_pending_gate(ticket_uuid):
+            cmd = self._ensure_next_pending_command(ticket_uuid)
+            if cmd:
+                self.audit.record("pipeline_resumed", ticket_id=ticket_uuid)
+                return {
+                    "resumed": True,
+                    "action": "replaced_stale_pending",
+                    "command": cmd.get("command_text"),
+                }
+
         if executed and not pending and not validation_passed:
+            cmd = self._ensure_next_pending_command(ticket_uuid)
+            if cmd:
+                self.audit.record("pipeline_resumed", ticket_id=ticket_uuid)
+                return {
+                    "resumed": True,
+                    "action": "queued_after_failure",
+                    "command": cmd.get("command_text"),
+                }
             threading.Thread(
                 target=self._approve_followup_background,
                 args=(ticket_uuid, validation_passed),
@@ -1323,8 +1580,18 @@ Previous commands and outputs are in the conversation."""
             logger.warning("Background approve_followup failed for %s: %s", ticket_uuid, exc)
             self.audit.record("approve_followup_failed", ticket_id=ticket_uuid, error=str(exc))
 
-    def approve_command(self, command_id: str, edited_command: str | None = None) -> dict[str, Any]:
-        updated, ticket_uuid, validation_passed = self._approve_command_core(command_id, edited_command)
+    def approve_command(
+        self,
+        command_id: str,
+        edited_command: str | None = None,
+        *,
+        auto_approved: bool = False,
+    ) -> dict[str, Any]:
+        updated, ticket_uuid, validation_passed = self._approve_command_core(
+            command_id,
+            edited_command,
+            auto_approved=auto_approved,
+        )
         failed = self._command_output_failed(updated.get("output_logs"))
         threading.Thread(
             target=self._approve_followup_background,

@@ -16,6 +16,7 @@ import { HypothesisTabs } from "@/components/hypothesis-tabs";
 import { AuditTrail, incidentResolved, lastFailedCommand } from "@/components/audit-trail";
 import { FailedCommandRetry } from "@/components/failed-command-retry";
 import { ValidationPassBanner } from "@/components/validation-pass-banner";
+import { AutoRunDiagnosticsToggle } from "@/components/auto-run-diagnostics-toggle";
 import { CollapsiblePanel, truncateSummary } from "@/components/collapsible-panel";
 import { ArrowLeft, Plug, ServerCrash, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,9 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
+import { useAutoRunDiagnostics } from "@/hooks/use-auto-run-diagnostics";
+import { useAutoApproveDiagnostics } from "@/hooks/use-auto-approve-diagnostics";
+import { canAutoApprove } from "@/lib/command-intent";
 
 export const Route = createFileRoute("/workbench/$ticketId")({
   head: ({ params }) => ({
@@ -90,10 +94,22 @@ function WorkbenchPage() {
       ),
     [cmds],
   );
+  const [autoRunDiagnostics, setAutoRunDiagnostics] = useAutoRunDiagnostics();
   const [analyzing, setAnalyzing] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [pipelineSettling, setPipelineSettling] = useState(false);
   const reconcileAttempted = useRef(false);
+
+  useAutoApproveDiagnostics({
+    enabled: autoRunDiagnostics,
+    pending,
+    validationPassed: validationPass.passed,
+    pipelineSettling,
+  });
+
+  const pendingNeedsManualApproval = Boolean(
+    pending && !canAutoApprove(pending.command_text, pending.safety_status),
+  );
 
   const RESUME_COOLDOWN_MS = 20_000;
 
@@ -239,7 +255,12 @@ function WorkbenchPage() {
             <PriorityBadge priority={ticket.priority} />
             <h1 className="text-base sm:text-lg font-semibold truncate">{ticket.title}</h1>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <AutoRunDiagnosticsToggle
+              enabled={autoRunDiagnostics}
+              onChange={setAutoRunDiagnostics}
+              className="hidden sm:flex max-w-xs"
+            />
             <Button onClick={connectSsh} variant="outline" size="sm" disabled={connecting}>
               <Plug className="h-4 w-4" /> Connect SSH
             </Button>
@@ -247,6 +268,13 @@ function WorkbenchPage() {
               <Sparkles className="h-4 w-4" /> {analyzing ? "Gemini analyzing…" : "Start Analysis (Gemini)"}
             </Button>
           </div>
+        </div>
+
+        <div className="mb-4 sm:hidden">
+          <AutoRunDiagnosticsToggle
+            enabled={autoRunDiagnostics}
+            onChange={setAutoRunDiagnostics}
+          />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr_380px] gap-4">
@@ -368,22 +396,46 @@ function WorkbenchPage() {
               title={pending ? "⚡ Agent Command Gate" : validationPass.passed ? "✓ Validation Complete" : "Command Gate"}
               subtitle={
                 pending
-                  ? "human authorization required"
+                  ? autoRunDiagnostics && !pendingNeedsManualApproval
+                    ? "auto-running diagnostic…"
+                    : autoRunDiagnostics && pendingNeedsManualApproval
+                      ? "fix/validation — manual approval required"
+                      : "human authorization required"
                   : validationPass.passed
-                    ? "public-test.sh passed — commit activity to ERP"
+                    ? "validation passed — commit activity to ERP"
                     : "no pending proposals — gate idle"
               }
               accent={pending ? "warn" : validationPass.passed ? "safe" : undefined}
             >
-              {pipelineSettling || cmdsFetching ? (
+              {pipelineSettling || (cmdsFetching && autoRunDiagnostics && pending && !pendingNeedsManualApproval) ? (
                 <div className="rounded-lg border border-dashed border-border bg-background/30 p-8 text-center">
-                  <p className="text-sm text-muted-foreground">Syncing command gate with selected pathway…</p>
+                  <p className="text-sm text-muted-foreground">
+                    {autoRunDiagnostics && pending && !pendingNeedsManualApproval
+                      ? "Auto-running read-only diagnostic on the VM…"
+                      : "Syncing command gate with selected pathway…"}
+                  </p>
                 </div>
-              ) : pending && !validationPass.passed ? (
-                <SafetyGate command={pending} />
+              ) : pending && (pendingNeedsManualApproval || !autoRunDiagnostics) ? (
+                <SafetyGate command={pending} autoRunEnabled={autoRunDiagnostics} />
+              ) : pending && autoRunDiagnostics && !pendingNeedsManualApproval ? (
+                <div className="rounded-lg border border-primary/40 bg-primary/10 p-6 text-center">
+                  <p className="text-sm font-medium text-primary">Auto-run diagnostics is ON</p>
+                  <p className="text-sm text-muted-foreground mt-2 font-mono break-all">
+                    {pending.command_text}
+                  </p>
+                </div>
               ) : validationPass.passed ? (
                 <div className="rounded-lg border border-safe/40 bg-safe/10 p-6 text-center">
-                  <p className="text-sm font-medium text-safe">public-test.sh PASS (exit 0)</p>
+                  <p className="text-sm font-medium text-safe">
+                    {(pending?.command_text || "").toLowerCase().includes("public-test") ||
+                    cmds.some(
+                      (c) =>
+                        (c.command_text || "").toLowerCase().includes("public-test") &&
+                        (c.human_status === "Approved" || c.human_status === "Edited"),
+                    )
+                      ? "public-test.sh PASS (exit 0)"
+                      : "Validation complete"}
+                  </p>
                   <p className="text-sm text-muted-foreground mt-2">
                     {validationPass.detail ?? "Fix validated successfully."} Edit the activity draft on the right and commit to Phoenix ERP.
                   </p>
