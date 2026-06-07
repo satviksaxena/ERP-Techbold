@@ -7,57 +7,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.agent.agent_prompts import get_system_instruction, is_valid_agent
+from app.agent.llm_schemas import AGENT_ROLES, ActivityDraft, CommandProposal
 from app.config import Settings
 from app.safety.layer import SafetyLayer
 
 logger = logging.getLogger(__name__)
-
-AGENT_ROLES = [
-    "Problem Analyzer",
-    "Customer System Analyzer",
-    "Problem Solver",
-    "Activity Log Generator",
-]
-
-SYSTEM_INSTRUCTION = """You are part of an AI Service Desk Autopilot for Linux VMs (Ubuntu).
-You work in a team of specialized agents. A human technician MUST approve every shell command
-before it runs — you only PROPOSE commands, never execute them.
-
-Agents and responsibilities:
-- Problem Analyzer: interpret the ticket symptom, propose initial read-only diagnostics
-- Customer System Analyzer: inspect system state (services, disk, memory, ports, logs)
-- Problem Solver: propose minimal, targeted fixes once root cause is likely known
-- Activity Log Generator: propose validation commands to prove the fix worked
-
-Rules:
-- Propose ONE shell command at a time
-- Prefer read-only diagnostics before fixes
-- Never propose: rm -rf on system paths, chmod -R 777, DROP DATABASE, disable firewall,
-  delete logs/history, run as unrestricted superuser
-- Keep commands minimal — no unnecessary package installs
-- Base proposals on ticket text AND prior command outputs
-- If enough evidence exists, move to validation (curl, systemctl status, health checks)
-- When proposing a fix, explain briefly in script_diff what will change"""
-
-
-class CommandProposal(BaseModel):
-    agent_name: str = Field(description="One of the four agent roles")
-    command_text: str = Field(description="Single shell command for SSH execution")
-    script_diff: str = Field(description="Human-readable diff starting with + or -")
-    reasoning: str = Field(default="", description="Why this command is the next best step")
-    ready_for_activity: bool = Field(
-        default=False,
-        description="True if troubleshooting appears complete and validation passed",
-    )
-
-
-class ActivityDraft(BaseModel):
-    summary: str
-    root_cause: str
-    actions_taken: str
-    commands_summary: str
-    validation_result: str
-
 
 PROPOSAL_SCHEMA = CommandProposal.model_json_schema()
 ACTIVITY_SCHEMA = ActivityDraft.model_json_schema()
@@ -86,6 +41,13 @@ class GeminiAgentService:
         existing_commands: list[dict[str, Any]],
         system_info: dict[str, Any] | None = None,
         hypothesis_context: str = "",
+        *,
+        target_agent: str | None = None,
+        evidence_context: str = "",
+        verifier_context: str = "",
+        runbook_context: str = "",
+        reflexion_context: str = "",
+        phase: str = "",
     ) -> dict[str, str] | None:
         if not self.enabled:
             return None
@@ -101,19 +63,26 @@ class GeminiAgentService:
                 f"SSH status: {system_info.get('connection_status', 'Unknown')}"
             )
 
-        step = len([c for c in existing_commands if c.get("human_status") in ("Approved", "Edited")])
-        suggested_agent = AGENT_ROLES[min(step, len(AGENT_ROLES) - 1)]
+        agent_name = target_agent if target_agent and is_valid_agent(target_agent) else AGENT_ROLES[0]
+        system_instruction = get_system_instruction(agent_name)
 
         prompt = f"""Ticket: {ticket.get('title')}
 Customer report (symptom only): {ticket.get('report_text')}
 Priority: {ticket.get('priority')}{sys_block}
+Pipeline phase: {phase or 'DIAGNOSE'}
 {hypothesis_context}
+{evidence_context}
+{verifier_context}
+{runbook_context}
+{reflexion_context}
 
-Commands executed so far ({step} approved):
+Commands executed so far:
 {history_text or '(none yet)'}
 
-Suggest the NEXT single command. Current pipeline stage hint: {suggested_agent}.
-If prior outputs show the issue is fixed, propose a validation command instead of more changes."""
+You are acting as: {agent_name}
+Suggest the NEXT single shell command for this phase.
+If verifier says continue_diagnose, do NOT propose fix commands.
+If proposing a fix, prefer systemctl enable --now for persistence."""
 
         try:
             client = self._get_client()
@@ -121,7 +90,7 @@ If prior outputs show the issue is fixed, propose a validation command instead o
                 model=self.settings.gemini_model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
+                    system_instruction=system_instruction,
                     temperature=0.15,
                     response_mime_type="application/json",
                     response_json_schema=PROPOSAL_SCHEMA,
@@ -131,8 +100,8 @@ If prior outputs show the issue is fixed, propose a validation command instead o
             data = json.loads(raw)
             proposal = CommandProposal.model_validate(data)
 
-            if proposal.agent_name not in AGENT_ROLES:
-                proposal.agent_name = suggested_agent
+            if not is_valid_agent(proposal.agent_name):
+                proposal.agent_name = agent_name
 
             safety = self.safety.evaluate(proposal.command_text)
             return {
@@ -142,6 +111,7 @@ If prior outputs show the issue is fixed, propose a validation command instead o
                 "safety_status": safety.status,
                 "human_status": "Pending",
                 "output_logs": "",
+                "agent_reasoning": proposal.reasoning or "",
                 "_reasoning": proposal.reasoning,
                 "_ready_for_activity": str(proposal.ready_for_activity),
             }

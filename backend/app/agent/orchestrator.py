@@ -7,9 +7,15 @@ import time
 from typing import Any
 
 from app.agent.azure_agent import AzureOpenAIAgent
+from app.agent.evidence import extract_from_output, format_evidence_for_llm, merge_evidence
 from app.agent.gemini_agent import GeminiAgentService
 from app.agent.hypothesis_generator import HypothesisGenerator
+from app.agent.hypothesis_ranker import rerank_hypotheses
 from app.agent.llm_schemas import PUBLIC_TEST_COMMAND
+from app.agent.phases import PipelinePhase, agent_for_phase, infer_phase
+from app.agent.reflexion import command_already_failed, reflexion_context
+from app.agent.runbooks import retrieve_runbooks
+from app.agent.verifier import VerifierService
 from app.activity.generator import generate_activity_draft
 from app.audit.log import AuditLog
 from app.config import Settings
@@ -66,6 +72,7 @@ class AgentOrchestrator:
         self.hypothesis_generator = HypothesisGenerator(settings, safety)
         self.azure = AzureOpenAIAgent(settings, safety)
         self.gemini = GeminiAgentService(settings, safety)
+        self.verifier = VerifierService(settings)
 
     def sync_tickets(self) -> list[dict[str, Any]]:
         if not self.phoenix:
@@ -152,7 +159,87 @@ class AgentOrchestrator:
         data = self.hypothesis_store.get(ticket_uuid)
         if data:
             return data
-        return {"hypotheses": [], "selected_index": 0, "reasoning_summary": ""}
+        return {
+            "hypotheses": [],
+            "selected_index": 0,
+            "reasoning_summary": "",
+            "pipeline_state": {},
+        }
+
+    def _selected_hypothesis(self, ticket_uuid: str) -> dict[str, Any] | None:
+        data = self.hypothesis_store.get(ticket_uuid)
+        if not data:
+            return None
+        hypotheses = data.get("hypotheses") or []
+        idx = data.get("selected_index", 0)
+        if not hypotheses or idx >= len(hypotheses):
+            return None
+        return hypotheses[idx]
+
+    def _pipeline_evidence(self, ticket_uuid: str) -> dict[str, Any]:
+        data = self.hypothesis_store.get(ticket_uuid) or {}
+        state = data.get("pipeline_state") or {}
+        return state.get("evidence") or {}
+
+    def _post_command_pipeline_update(
+        self,
+        ticket_uuid: str,
+        ticket: dict[str, Any],
+        latest_command: dict[str, Any],
+        all_commands: list[dict[str, Any]],
+    ) -> None:
+        """Extract evidence, verify, re-rank hypotheses, update pipeline phase."""
+        if latest_command.get("human_status") not in ("Approved", "Edited"):
+            return
+
+        patch = extract_from_output(
+            latest_command.get("command_text") or "",
+            latest_command.get("output_logs") or "",
+        )
+        evidence = merge_evidence(self._pipeline_evidence(ticket_uuid), patch)
+
+        data = self.hypothesis_store.get(ticket_uuid) or {}
+        hypotheses = list(data.get("hypotheses") or [])
+        selected_index = data.get("selected_index", 0)
+        hypothesis = hypotheses[selected_index] if hypotheses and selected_index < len(hypotheses) else None
+
+        if hypotheses:
+            hypotheses = rerank_hypotheses(hypotheses, evidence, selected_index)
+            self.hypothesis_store.save(
+                ticket_uuid,
+                hypotheses,
+                selected_index,
+                data.get("reasoning_summary") or "",
+                pipeline_state={**(data.get("pipeline_state") or {}), "evidence": evidence},
+            )
+
+        verification = self.verifier.verify(ticket, hypothesis, evidence, all_commands)
+        phase = infer_phase(
+            all_commands,
+            public_test_done=self._public_test_done(all_commands),
+            needs_public_test=self._needs_public_test(all_commands),
+            verifier_recommend=verification.recommend,
+        )
+
+        self.hypothesis_store.update_pipeline_state(
+            ticket_uuid,
+            evidence=evidence,
+            phase=phase.value,
+            verifier={
+                "recommend": verification.recommend,
+                "summary": verification.evidence_summary,
+                "confidence": verification.confidence,
+                "hypothesis_supported": verification.hypothesis_supported,
+            },
+        )
+        self.audit.record(
+            "pipeline_verified",
+            ticket_id=ticket_uuid,
+            phase=phase.value,
+            recommend=verification.recommend,
+            summary=(verification.evidence_summary or "")[:200],
+        )
+        self.store.update_ticket(ticket_uuid, active_agent=agent_for_phase(phase))
 
     def select_hypothesis(self, ticket_uuid: str, index: int) -> dict[str, Any]:
         data = self.hypothesis_store.select(ticket_uuid, index)
@@ -260,13 +347,15 @@ class AgentOrchestrator:
         if pending is None:
             pending = [c for c in self.store.list_commands(ticket_uuid) if c.get("human_status") == "Pending"]
         if pending:
-            return self.store.update_command(
-                pending[0]["id"],
-                agent_name=proposal["agent_name"],
-                command_text=proposal["command_text"],
-                script_diff=proposal["script_diff"],
-                safety_status=proposal["safety_status"],
-            )
+            fields = {
+                "agent_name": proposal["agent_name"],
+                "command_text": proposal["command_text"],
+                "script_diff": proposal["script_diff"],
+                "safety_status": proposal["safety_status"],
+            }
+            if proposal.get("agent_reasoning"):
+                fields["agent_reasoning"] = proposal["agent_reasoning"]
+            return self.store.update_command(pending[0]["id"], **fields)
         cmd = self.store.insert_command(ticket_uuid, **proposal)
         self.store.update_ticket(
             ticket_uuid,
@@ -450,52 +539,89 @@ class AgentOrchestrator:
         sys_info: dict[str, Any] | None,
         hypothesis_ctx: str,
     ) -> dict[str, str] | None:
+        ticket_uuid = ticket["id"]
+        evidence = self._pipeline_evidence(ticket_uuid)
+        data = self.hypothesis_store.get(ticket_uuid) or {}
+        state = data.get("pipeline_state") or {}
+        verifier_data = state.get("verifier") or {}
+        hypothesis = self._selected_hypothesis(ticket_uuid)
+
+        verification = self.verifier.verify(ticket, hypothesis, evidence, existing)
+        phase = infer_phase(
+            existing,
+            public_test_done=self._public_test_done(existing),
+            needs_public_test=self._needs_public_test(existing),
+            verifier_recommend=verification.recommend,
+        )
+        target_agent = agent_for_phase(phase)
+
+        ctx_kwargs = {
+            "target_agent": target_agent,
+            "evidence_context": f"\nStructured evidence:\n{format_evidence_for_llm(evidence)}",
+            "verifier_context": (
+                f"\nVerifier ({verification.confidence}): {verification.recommend} — "
+                f"{verification.evidence_summary}"
+            ),
+            "runbook_context": retrieve_runbooks(ticket, hypothesis),
+            "reflexion_context": reflexion_context(existing),
+            "phase": phase.value,
+        }
+
         primary = (self.settings.llm_primary or "gemini").lower()
         order = (
             [("gemini", self.gemini), ("azure", self.azure)]
             if primary == "gemini"
             else [("azure", self.azure), ("gemini", self.gemini)]
         )
+        proposal: dict[str, str] | None = None
         for name, agent in order:
             if not agent.enabled:
                 continue
             try:
                 proposal = agent.propose_next_command(
-                    ticket, existing, sys_info, hypothesis_context=hypothesis_ctx
+                    ticket,
+                    existing,
+                    sys_info,
+                    hypothesis_context=hypothesis_ctx,
+                    **ctx_kwargs,
                 )
                 if proposal:
-                    proposal.pop("_reasoning", None)
                     proposal.pop("_ready_for_activity", None)
-                    return proposal
+                    proposal.pop("_reasoning", None)
+                    break
             except Exception as exc:
                 self.audit.record(f"{name}_proposal_failed", ticket_id=ticket["id"], error=str(exc))
 
-        if self.settings.openai_api_key:
+        if not proposal and self.settings.openai_api_key:
             llm_cmd = self._openai_propose(ticket, existing)
             if llm_cmd:
                 safety = self.safety.evaluate(llm_cmd["command_text"])
-                return {
-                    "agent_name": llm_cmd.get("agent_name", "Problem Solver"),
+                proposal = {
+                    "agent_name": llm_cmd.get("agent_name", target_agent),
                     "command_text": llm_cmd["command_text"],
                     "script_diff": llm_cmd.get("script_diff", f"+ {llm_cmd['command_text']}"),
                     "safety_status": safety.status,
                     "human_status": "Pending",
                     "output_logs": "",
+                    "agent_reasoning": llm_cmd.get("reasoning", ""),
                 }
 
-        pending_or_done = len(existing)
-        if pending_or_done < len(DIAGNOSTIC_COMMANDS):
-            agent, command, diff = DIAGNOSTIC_COMMANDS[pending_or_done]
-            safety = self.safety.evaluate(command)
-            return {
-                "agent_name": agent,
-                "command_text": command,
-                "script_diff": diff,
-                "safety_status": safety.status,
-                "human_status": "Pending",
-                "output_logs": "",
-            }
+        if not proposal:
+            proposal = self._fallback_proposal(existing, phase, verification)
+        if not proposal:
+            return None
 
+        enforced = self._enforce_verifier_and_reflexion(proposal, existing, verification, phase)
+        if enforced:
+            return enforced
+        return self._fallback_proposal(existing, phase, verification)
+
+    def _fallback_proposal(
+        self,
+        existing: list[dict[str, Any]],
+        phase: PipelinePhase,
+        verification: Any,
+    ) -> dict[str, str] | None:
         if self._needs_public_test(existing):
             safety = self.safety.evaluate(PUBLIC_TEST_COMMAND)
             return {
@@ -505,9 +631,63 @@ class AgentOrchestrator:
                 "safety_status": safety.status,
                 "human_status": "Pending",
                 "output_logs": "",
+                "agent_reasoning": "Validation required after fix — run public-test.sh.",
             }
 
+        pending_or_done = len([c for c in existing if c.get("human_status") in ("Approved", "Edited")])
+        if pending_or_done < len(DIAGNOSTIC_COMMANDS) and phase in (
+            PipelinePhase.DIAGNOSE,
+            PipelinePhase.HYPOTHESIS_SELECTED,
+        ):
+            agent, command, diff = DIAGNOSTIC_COMMANDS[pending_or_done]
+            if not command_already_failed(existing, command):
+                safety = self.safety.evaluate(command)
+                return {
+                    "agent_name": agent,
+                    "command_text": command,
+                    "script_diff": diff,
+                    "safety_status": safety.status,
+                    "human_status": "Pending",
+                    "output_logs": "",
+                    "agent_reasoning": "Fallback diagnostic sequence.",
+                }
+
         return None
+
+    def _enforce_verifier_and_reflexion(
+        self,
+        proposal: dict[str, str],
+        existing: list[dict[str, Any]],
+        verification: Any,
+        phase: PipelinePhase,
+    ) -> dict[str, str] | None:
+        cmd_text = (proposal.get("command_text") or "").strip()
+        if not cmd_text:
+            return None
+
+        if command_already_failed(existing, cmd_text):
+            self.audit.record(
+                "reflexion_blocked_repeat",
+                command=cmd_text,
+            )
+            return None
+
+        is_fix = self._looks_like_fix(cmd_text)
+        if is_fix and verification.recommend in ("continue_diagnose", "switch_path"):
+            self.audit.record(
+                "verifier_blocked_fix",
+                command=cmd_text,
+                recommend=verification.recommend,
+            )
+            return None
+
+        if phase in (PipelinePhase.DIAGNOSE, PipelinePhase.HYPOTHESIS_SELECTED) and is_fix:
+            if verification.recommend != "apply_fix":
+                self.audit.record("verifier_blocked_premature_fix", command=cmd_text)
+                return None
+
+        proposal["agent_name"] = proposal.get("agent_name") or agent_for_phase(phase)
+        return proposal
 
     @staticmethod
     def _is_public_test(cmd: dict[str, Any]) -> bool:
@@ -719,6 +899,9 @@ Previous commands and outputs are in the conversation."""
 
         all_commands = self.store.list_commands(ticket_uuid)
         validation_passed = self._public_test_done(all_commands)
+
+        if ticket:
+            self._post_command_pipeline_update(ticket_uuid, ticket, updated, all_commands)
 
         if validation_passed:
             self.store.update_ticket(ticket_uuid, status="Fixed", active_agent="Activity Log Generator")

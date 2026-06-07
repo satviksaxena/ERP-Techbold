@@ -61,6 +61,7 @@ class AzureOpenAIAgent:
         existing_commands: list[dict[str, Any]],
         system_info: dict[str, Any] | None = None,
         hypothesis_context: str = "",
+        **kwargs: Any,
     ) -> dict[str, str] | None:
         if not self.enabled:
             return None
@@ -76,19 +77,36 @@ class AzureOpenAIAgent:
             )
 
         step = len([c for c in existing_commands if c.get("human_status") in ("Approved", "Edited")])
+        target_agent = kwargs.get("target_agent") or "Customer System Analyzer"
+        evidence_context = kwargs.get("evidence_context") or ""
+        verifier_context = kwargs.get("verifier_context") or ""
+        runbook_context = kwargs.get("runbook_context") or ""
+        reflexion_context = kwargs.get("reflexion_context") or ""
+        phase = kwargs.get("phase") or ""
+
+        from app.agent.agent_prompts import get_system_instruction
+
+        system_instruction = get_system_instruction(target_agent)
+
         prompt = f"""Ticket: {ticket.get('title')}
 Customer report: {ticket.get('report_text')}
 Priority: {ticket.get('priority')}{sys_block}
+Pipeline phase: {phase or 'DIAGNOSE'}
 {hypothesis_context}
+{evidence_context}
+{verifier_context}
+{runbook_context}
+{reflexion_context}
 
 Approved commands so far: {step}
 {history or '(none yet)'}
 
+You are acting as: {target_agent}
 Respond with JSON matching this schema:
 {{"agent_name": "...", "command_text": "...", "script_diff": "+ ...", "reasoning": "...", "ready_for_activity": false}}"""
 
         try:
-            data = self._chat_json(SYSTEM_INSTRUCTION, prompt, CommandProposal)
+            data = self._chat_json(system_instruction, prompt, CommandProposal)
             proposal = CommandProposal.model_validate(data)
             safety = self.safety.evaluate(proposal.command_text)
             return {
@@ -98,6 +116,7 @@ Respond with JSON matching this schema:
                 "safety_status": safety.status,
                 "human_status": "Pending",
                 "output_logs": "",
+                "agent_reasoning": proposal.reasoning or "",
                 "_reasoning": proposal.reasoning,
                 "_ready_for_activity": str(proposal.ready_for_activity),
             }

@@ -91,6 +91,25 @@ def test_filter_proposal_blocks_premature_public_test():
     assert orch._filter_proposal(proposal, [diagnostic]) is None
 
 
+def test_enforce_verifier_blocks_premature_fix():
+    from app.agent.phases import PipelinePhase
+    from app.agent.verifier import VerifierResult
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch.audit = type("A", (), {"record": lambda *a, **k: None})()
+    verification = VerifierResult(recommend="continue_diagnose", evidence_summary="need more")
+    proposal = {
+        "agent_name": "Problem Solver",
+        "command_text": "sudo systemctl enable --now foo.service",
+        "script_diff": "+ fix",
+        "safety_status": "Safe",
+        "human_status": "Pending",
+        "output_logs": "",
+    }
+    result = orch._enforce_verifier_and_reflexion(proposal, [], verification, PipelinePhase.DIAGNOSE)
+    assert result is None
+
+
 def test_command_from_fix_strategy_extracts_chown():
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch.safety = __import__("app.safety.layer", fromlist=["SafetyLayer"]).SafetyLayer()

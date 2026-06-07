@@ -149,12 +149,30 @@ class SupabaseStore:
 
     def insert_command(self, ticket_uuid: str, **fields: Any) -> dict[str, Any]:
         payload = {"ticket_id": ticket_uuid, **fields}
-        resp = self.client.table("ai_commands").insert(payload).execute()
-        return resp.data[0]
+        for key in ("_reasoning", "_ready_for_activity"):
+            payload.pop(key, None)
+        try:
+            resp = self.client.table("ai_commands").insert(payload).execute()
+            return resp.data[0]
+        except Exception as exc:
+            if "agent_reasoning" in str(exc):
+                payload.pop("agent_reasoning", None)
+                resp = self.client.table("ai_commands").insert(payload).execute()
+                return resp.data[0]
+            raise
 
     def update_command(self, command_id: str, **fields: Any) -> dict[str, Any]:
-        resp = self.client.table("ai_commands").update(fields).eq("id", command_id).execute()
-        return resp.data[0]
+        for key in ("_reasoning", "_ready_for_activity"):
+            fields.pop(key, None)
+        try:
+            resp = self.client.table("ai_commands").update(fields).eq("id", command_id).execute()
+            return resp.data[0]
+        except Exception as exc:
+            if "agent_reasoning" in str(exc):
+                fields.pop("agent_reasoning", None)
+                resp = self.client.table("ai_commands").update(fields).eq("id", command_id).execute()
+                return resp.data[0]
+            raise
 
     def upsert_activity(self, ticket_uuid: str, **fields: Any) -> None:
         payload = {"ticket_id": ticket_uuid, **fields}

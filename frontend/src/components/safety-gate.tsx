@@ -114,6 +114,17 @@ export function SafetyGate({ command }: { command: AiCommand }) {
         </span>
       </div>
 
+      {(command as AiCommand & { agent_reasoning?: string }).agent_reasoning && (
+        <div className="rounded-md border border-primary/30 bg-primary/5 p-3 mb-3">
+          <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-primary mb-1">
+            agent reasoning
+          </div>
+          <p className="text-[12px] text-muted-foreground leading-relaxed whitespace-pre-wrap">
+            {(command as AiCommand & { agent_reasoning?: string }).agent_reasoning}
+          </p>
+        </div>
+      )}
+
       {command.script_diff && (
         <div className="rounded-md border border-border bg-[oklch(0.13_0.02_250)] mb-3">
           <div className="px-3 py-1.5 border-b border-border text-[10px] font-mono uppercase tracking-[0.2em] text-muted-foreground">

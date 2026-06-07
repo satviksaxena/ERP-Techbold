@@ -64,6 +64,12 @@ CREATE TABLE IF NOT EXISTS public.ticket_hypotheses (
 ALTER TABLE public.ticket_hypotheses
   ADD COLUMN IF NOT EXISTS reasoning_summary TEXT NOT NULL DEFAULT '';
 
+ALTER TABLE public.ticket_hypotheses
+  ADD COLUMN IF NOT EXISTS pipeline_state JSONB NOT NULL DEFAULT '{}';
+
+ALTER TABLE public.ai_commands
+  ADD COLUMN IF NOT EXISTS agent_reasoning TEXT NOT NULL DEFAULT '';
+
 -- 2. Grants
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.tickets TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.system_info TO anon, authenticated;

@@ -8,12 +8,26 @@ export type HypothesisItem = {
   first_command: string;
   fix_strategy: string;
   safety_status?: string;
+  eliminated?: boolean;
+  elimination_reason?: string;
+};
+
+export type PipelineState = {
+  evidence?: Record<string, unknown>;
+  phase?: string;
+  verifier?: {
+    recommend?: string;
+    summary?: string;
+    confidence?: string;
+    hypothesis_supported?: boolean;
+  };
 };
 
 export type HypothesisState = {
   hypotheses: HypothesisItem[];
   selected_index: number;
   reasoning_summary?: string;
+  pipeline_state?: PipelineState;
 };
 
 type RequestOptions = RequestInit & { timeoutMs?: number };

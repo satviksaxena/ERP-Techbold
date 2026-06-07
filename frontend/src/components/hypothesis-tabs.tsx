@@ -63,6 +63,8 @@ export function HypothesisTabs({
   const hypotheses = data?.hypotheses ?? [];
   const selectedIndex = data?.selected_index ?? 0;
   const reasoningSummary = data?.reasoning_summary ?? "";
+  const pipelineState = data?.pipeline_state;
+  const verifier = pipelineState?.verifier;
 
   useEffect(() => {
     if (hypotheses.length > 0 && expandedIndex === null) {
@@ -150,6 +152,15 @@ export function HypothesisTabs({
           </p>
         </div>
       )}
+      {verifier?.summary && (
+        <div className="rounded-lg border border-border/60 bg-background/25 p-3 text-[11px] text-muted-foreground">
+          <span className="font-mono uppercase tracking-wider text-primary">Verifier · {verifier.recommend}</span>
+          <p className="mt-1 leading-relaxed">{verifier.summary}</p>
+          {pipelineState?.phase && (
+            <p className="mt-1 font-mono text-[10px] text-muted-foreground/80">Phase: {pipelineState.phase}</p>
+          )}
+        </div>
+      )}
       <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
         <Lightbulb className="h-3.5 w-3.5 text-primary shrink-0" />
         Pick a pathway — click a card to view details
@@ -159,15 +170,17 @@ export function HypothesisTabs({
         {hypotheses.map((h: HypothesisItem, i: number) => {
           const isActive = i === activeIndex;
           const isSelected = i === selectedIndex;
+          const isEliminated = Boolean(h.eliminated);
           return (
             <button
               key={i}
               type="button"
-              disabled={selecting}
+              disabled={selecting || isEliminated}
               onClick={() => selectPath(i)}
               className={cn(
                 "text-left rounded-lg border p-3 transition-all min-w-0",
                 "bg-background/30 hover:bg-background/50",
+                isEliminated && "opacity-50 border-border/40",
                 isActive
                   ? "border-primary/60 ring-1 ring-primary/40 shadow-[0_0_20px_-8px] shadow-primary/30"
                   : "border-border/60 hover:border-primary/30",
@@ -182,6 +195,11 @@ export function HypothesisTabs({
                 )}
               </div>
               <h3 className="text-sm font-medium leading-snug break-words">{h.title}</h3>
+              {isEliminated && (
+                <p className="mt-1 text-[10px] text-danger font-mono">
+                  disproven · {(h as HypothesisItem).elimination_reason || "evidence mismatch"}
+                </p>
+              )}
               <p className="mt-2 text-[11px] text-muted-foreground line-clamp-2 leading-relaxed break-words">
                 {h.summary}
               </p>
