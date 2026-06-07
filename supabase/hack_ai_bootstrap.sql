@@ -70,19 +70,32 @@ ALTER TABLE public.ticket_hypotheses
 ALTER TABLE public.ai_commands
   ADD COLUMN IF NOT EXISTS agent_reasoning TEXT NOT NULL DEFAULT '';
 
+CREATE TABLE IF NOT EXISTS public.audit_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id UUID REFERENCES public.tickets(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  details JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS audit_events_ticket_id_created_at_idx
+  ON public.audit_events (ticket_id, created_at);
+
 -- 2. Grants
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.tickets TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.system_info TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.ai_commands TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.activities TO anon, authenticated;
+GRANT SELECT, INSERT, DELETE ON public.audit_events TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.ticket_hypotheses TO anon, authenticated;
-GRANT ALL ON public.tickets, public.system_info, public.ai_commands, public.activities, public.ticket_hypotheses TO service_role;
+GRANT ALL ON public.tickets, public.system_info, public.ai_commands, public.activities, public.audit_events, public.ticket_hypotheses TO service_role;
 
 -- 3. Row Level Security
 ALTER TABLE public.tickets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.system_info ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ai_commands ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.activities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.audit_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ticket_hypotheses ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Public read tickets" ON public.tickets;
@@ -121,6 +134,13 @@ CREATE POLICY "Public write acts" ON public.activities FOR INSERT WITH CHECK (tr
 CREATE POLICY "Public update acts" ON public.activities FOR UPDATE USING (true);
 CREATE POLICY "Public delete acts" ON public.activities FOR DELETE USING (true);
 
+DROP POLICY IF EXISTS "Public read audit" ON public.audit_events;
+DROP POLICY IF EXISTS "Public write audit" ON public.audit_events;
+DROP POLICY IF EXISTS "Public delete audit" ON public.audit_events;
+CREATE POLICY "Public read audit" ON public.audit_events FOR SELECT USING (true);
+CREATE POLICY "Public write audit" ON public.audit_events FOR INSERT WITH CHECK (true);
+CREATE POLICY "Public delete audit" ON public.audit_events FOR DELETE USING (true);
+
 DROP POLICY IF EXISTS "Public read hypotheses" ON public.ticket_hypotheses;
 DROP POLICY IF EXISTS "Public write hypotheses" ON public.ticket_hypotheses;
 DROP POLICY IF EXISTS "Public update hypotheses" ON public.ticket_hypotheses;
@@ -144,6 +164,9 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $realtime$;
 DO $realtime$ BEGIN
   ALTER PUBLICATION supabase_realtime ADD TABLE public.ticket_hypotheses;
 EXCEPTION WHEN duplicate_object THEN NULL; END $realtime$;
+DO $realtime$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.audit_events;
+EXCEPTION WHEN duplicate_object THEN NULL; END $realtime$;
 
--- 5. Verify (should return 5 table names)
+-- 5. Verify (should return 6 table names)
 SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;

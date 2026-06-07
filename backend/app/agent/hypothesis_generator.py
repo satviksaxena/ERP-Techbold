@@ -187,7 +187,7 @@ class HypothesisGenerator:
             except Exception as exc:
                 logger.warning("Gemini hypothesis generation failed: %s", exc)
 
-        if self.azure.enabled:
+        if primary != "gemini" and self.azure.enabled:
             try:
                 data = self.azure._chat_json(
                     "You are an expert Linux SRE proposing distinct diagnostic hypotheses.",

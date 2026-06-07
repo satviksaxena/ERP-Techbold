@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     gemini_thinking_level: str = "high"  # minimal | low | medium | high
     gemini_ticket_thinking_enabled: bool = True
 
-    # gemini | azure — which LLM drives command proposals and activity drafts
+    # gemini | azure — command proposals and activity drafts (default: gemini)
     llm_primary: str = "gemini"
 
     openai_api_key: str | None = None

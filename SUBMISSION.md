@@ -35,7 +35,7 @@ Upload to YouTube/Loom and paste URL in Tally.
 `AI Service Desk Autopilot`
 
 **One-line pitch:**  
-`Gemini-powered technician workbench that fixes Linux incidents over SSH under human approval and writes precise activities back to Phoenix ERP.`
+`Gemini-powered service desk that learns from every resolved case — persistent audit + fast paths — to fix similar Linux incidents in fewer commands, under human approval.`
 
 **Team & members:**  
 _List all 2–4 members with roles._
@@ -44,7 +44,7 @@ _List all 2–4 members with roles._
 Technicians manually SSH into customer VMs, troubleshoot ad hoc, and leave vague ERP activity logs — losing reusable knowledge.
 
 **Solution overview:**  
-Multi-agent AI copilot with ranked hypothesis paths, slide-to-authorize command gate, safety layer, live audit trail, and auto-generated Phoenix activities. Human approves every shell action.
+Multi-agent AI copilot with ranked hypothesis paths, slide-to-authorize command gate, safety layer, **persisted audit trail**, and auto-generated Phoenix activities. **Experiential learning (in progress):** audit logs, command history, and analysis from each case feed a Learning Agent that refines fast paths and agent behavior so new issues resolve faster with proven commands. Human approves every shell action.
 
 **Tech stack:**  
 React, TanStack, Supabase, FastAPI, Paramiko, Google Gemini, Docker Compose, Phoenix ERP mock.
@@ -70,7 +70,7 @@ React, TanStack, Supabase, FastAPI, Paramiko, Google Gemini, Docker Compose, Pho
 |----------|---------------------|------------------|
 | A (20) | ERP load, list, activity submit | Sync + commit activity |
 | B (35) | Hidden VM fixes, public-test | Full loop on fresh VM |
-| C (20) | Safety, audit, no secrets | Audit panel + reject blocked cmd |
+| C (20) | Safety, audit, no secrets | Audit panel (persisted) + reject blocked cmd |
 | D (10) | UX, human control | Hypotheses + slide gate + retry |
 | E (15) | README, tests, docker | `pytest` + `docker-smoke.sh` |
 

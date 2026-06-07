@@ -161,7 +161,7 @@ class SupabaseStore:
 
     def insert_command(self, ticket_uuid: str, **fields: Any) -> dict[str, Any]:
         payload = {"ticket_id": ticket_uuid, **fields}
-        for key in ("_reasoning", "_ready_for_activity", "plan_intent"):
+        for key in ("_reasoning", "_ready_for_activity", "plan_intent", "_path_source", "from_path_switch"):
             payload.pop(key, None)
         reasoning = payload.pop("agent_reasoning", None)
         resp = self.client.table("ai_commands").insert(payload).execute()
@@ -176,7 +176,7 @@ class SupabaseStore:
         return row
 
     def update_command(self, command_id: str, **fields: Any) -> dict[str, Any]:
-        for key in ("_reasoning", "_ready_for_activity", "plan_intent"):
+        for key in ("_reasoning", "_ready_for_activity", "plan_intent", "_path_source", "from_path_switch"):
             fields.pop(key, None)
         try:
             resp = self.client.table("ai_commands").update(fields).eq("id", command_id).execute()
@@ -201,6 +201,10 @@ class SupabaseStore:
         self.client.table("ai_commands").delete().neq("id", null_uuid).execute()
         self.client.table("activities").delete().neq("ticket_id", null_uuid).execute()
         try:
+            self.client.table("audit_events").delete().neq("id", null_uuid).execute()
+        except Exception:
+            pass
+        try:
             self.client.table("ticket_hypotheses").delete().neq("ticket_id", null_uuid).execute()
         except Exception:
             pass
@@ -214,3 +218,47 @@ class SupabaseStore:
     def clear_ticket_run(self, ticket_uuid: str) -> None:
         self.client.table("ai_commands").delete().eq("ticket_id", ticket_uuid).execute()
         self.client.table("activities").delete().eq("ticket_id", ticket_uuid).execute()
+        try:
+            self.client.table("audit_events").delete().eq("ticket_id", ticket_uuid).execute()
+        except Exception:
+            pass
+
+    def insert_audit_event(self, entry: dict[str, Any]) -> None:
+        """Persist one audit row for jury-visible trail."""
+        ticket_id = entry.get("ticket_id")
+        action = entry.get("action") or "unknown"
+        details = {k: v for k, v in entry.items() if k not in ("ticket_id", "action", "timestamp")}
+        if entry.get("timestamp"):
+            details["timestamp"] = entry["timestamp"]
+        payload: dict[str, Any] = {
+            "action": action,
+            "details": details,
+        }
+        if ticket_id:
+            payload["ticket_id"] = ticket_id
+        self.client.table("audit_events").insert(payload).execute()
+
+    def list_audit_events(self, ticket_id: str | None = None, *, limit: int = 500) -> list[dict[str, Any]]:
+        query = self.client.table("audit_events").select("*").order("created_at")
+        if ticket_id:
+            query = query.eq("ticket_id", ticket_id)
+        resp = query.limit(limit).execute()
+        rows = resp.data or []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            details = row.get("details") or {}
+            if isinstance(details, str):
+                import json
+
+                try:
+                    details = json.loads(details)
+                except Exception:
+                    details = {}
+            merged = {
+                "timestamp": details.get("timestamp") or row.get("created_at"),
+                "action": row.get("action"),
+                "ticket_id": row.get("ticket_id"),
+                **{k: v for k, v in details.items() if k != "timestamp"},
+            }
+            out.append(merged)
+        return out

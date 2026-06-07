@@ -81,13 +81,12 @@ STEP 3 — Create your environment file (.env)
   GEMINI_THINKING_MODEL=gemini-3.5-flash
   GEMINI_THINKING_LEVEL=high
   GEMINI_TICKET_THINKING_ENABLED=true
-      Primary AI for command proposals. (Or use Azure OpenAI vars below.)
+      Primary AI for command proposals (Docker forces gemini even if .env differs).
 
-  Optional Azure OpenAI (if not using Gemini):
+  Optional Azure OpenAI (not used when LLM_PRIMARY=gemini):
   AZURE_OPENAI_ENDPOINT=...
   AZURE_OPENAI_API_KEY=...
   AZURE_OPENAI_DEPLOYMENT=gpt-5.4-nano
-  LLM_PRIMARY=azure
 
   SSH (leave as-is for Docker — keys are mounted in Step 4):
   SSH_KEYS_DIR=/keys
@@ -145,6 +144,10 @@ STEP 5 — Apply Supabase database schema (one-time)
   - supabase/migrations/20260606113936_*.sql
   - supabase/migrations/20260606173000_system_notes.sql
   - supabase/migrations/20260606180000_ticket_hypotheses.sql
+  - supabase/migrations/20260607120000_audit_events.sql   (persisted audit for jury + learning)
+
+  The audit_events table stores every command and key action for the Audit Trail
+  panel and the experiential auto-learning pipeline (see docs/EXPERIENTIAL_LEARNING.md).
 
   You only need to do this once per Supabase project.
 

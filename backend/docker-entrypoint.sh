@@ -22,4 +22,10 @@ if [ ! -f "${SSH_PRIVATE_KEY_PATH:-/keys/case1_key.pem}" ]; then
   exit 1
 fi
 
+if [ -z "${GEMINI_API_KEY:-}" ]; then
+  echo "WARNING: GEMINI_API_KEY is not set — AI command proposals will use rule-based fallbacks only."
+fi
+
+export LLM_PRIMARY=gemini
+
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

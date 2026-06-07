@@ -16,7 +16,26 @@ Phoenix ERP (Bearer token)  ←→  FastAPI Backend  ←→  Supabase (realtime 
 |-------|------|
 | **Frontend** | Lovable React workbench — ticket matrix, command gate, activity draft |
 | **Backend** | ERP client, SSH runner, safety layer, agent orchestrator, audit log |
-| **Supabase** | Realtime state for tickets, commands, system info, activities |
+| **Supabase** | Realtime state for tickets, commands, system info, activities, **audit_events** |
+
+### Experiential learning (in progress)
+
+We are building an **experiential auto-learning layer** on top of the audit trail. Each resolved case produces structured experience:
+
+- **Audit events** — every command, approval, failure, pathway switch, and validation (`audit_events` in Supabase + `audit.jsonl`)
+- **Command history** — full SSH transcripts per ticket (`ai_commands`)
+- **Analysis artifacts** — ranked hypotheses, verifier outcomes, root-cause notes (`ticket_hypotheses`)
+- **ERP activities** — final summary, technical root cause, ordered actions, validation proof (`activities`)
+
+A dedicated **Learning Agent** (roadmap) will ingest closed incidents and update:
+
+- **Fast paths** — minimal command sequences per ticket class (see `agent/fast_paths.py`)
+- **Runbooks & prompts** — refined diagnostics/fix patterns for Problem Analyzer, Customer System Analyzer, and Problem Solver
+- **Orchestrator policy** — prefer proven command chains over exploratory LLM loops on similar symptoms
+
+Goal: when a new issue resembles a past case, the system proposes the **correct fix in fewer commands** and less time — while humans still approve every mutating action.
+
+See [`docs/EXPERIENTIAL_LEARNING.md`](docs/EXPERIENTIAL_LEARNING.md) for the full design.
 
 ### Human-in-the-loop flow
 
@@ -50,8 +69,9 @@ cp /path/from/builder-base/your-key.pem keys/your-key.pem
 Apply Supabase schema (if not already):
 
 ```bash
-cd frontend
-# Run migration in supabase/migrations/ via Supabase dashboard SQL editor or CLI
+# In Supabase SQL Editor, run in order:
+#   supabase/hack_ai_bootstrap.sql          (full schema)
+#   supabase/migrations/20260607120000_audit_events.sql   (if bootstrap already applied)
 ```
 
 ## Run with Docker (recommended for judges / another machine)
@@ -105,19 +125,20 @@ See [`.env.example`](.env.example). **Never commit** `.env` or SSH keys.
 | `VITE_API_BASE` | Frontend | Backend URL |
 | `GEMINI_API_KEY` | Backend | **Primary LLM** — multi-agent command proposals |
 | `GEMINI_MODEL` | Backend | Default: `gemini-3.5-flash` (latest GA agentic model) |
-| `OPENAI_API_KEY` | Backend (optional) | Fallback LLM if Gemini unavailable |
+| `LLM_PRIMARY` | Backend | Always `gemini` (Docker enforces this; Azure is not used as fallback) |
 
 ## Backend modules
 
 ```
 backend/app/
-  phoenix/client.py    # ERP API (tickets, customer-system, activities, reset)
-  ssh/runner.py        # Paramiko SSH with timeouts
-  safety/layer.py      # Blocks hard-fail commands (scoring.md)
-  agent/gemini_agent.py  # Gemini multi-agent pipeline (gemini-3.5-flash)
-  agent/orchestrator.py  # Human-in-the-loop orchestration
-  activity/generator.py # Draft Phoenix activity from audit trail
-  audit/log.py         # Command/action audit trail
+  phoenix/client.py       # ERP API (tickets, customer-system, activities, reset)
+  ssh/runner.py           # Paramiko SSH with timeouts
+  safety/layer.py         # Blocks hard-fail commands (scoring.md)
+  agent/gemini_agent.py   # Gemini multi-agent pipeline
+  agent/orchestrator.py   # Human-in-the-loop orchestration
+  agent/fast_paths.py     # Minimal proven command chains (7001–7005)
+  activity/generator.py   # Draft Phoenix activity from commands + audit
+  audit/log.py            # Persistent audit trail (Supabase + file)
   store/supabase_store.py # Supabase read/write
 ```
 
@@ -150,13 +171,14 @@ cd backend && .venv/bin/pytest tests/ -v
 | Empty ticket list | Click **Sync ERP** in header |
 | SSH connect fails | Key at `SSH_PRIVATE_KEY_PATH`, user `azureuser`, VM reachable |
 | Backend can't reach Phoenix in Docker | Use `host.docker.internal` in `PHOENIX_API_BASE_URL` |
-| Supabase errors | Verify migration applied + service role key on backend |
+| Supabase errors | Verify migration applied + service role key on backend; run `20260607120000_audit_events.sql` for persisted audit |
 
 ## Submission
 
 - Track: **techbold · AI Service Desk Autopilot**
 - MIT License — see [LICENSE](LICENSE)
 - Full rubric: [`docs/scoring.md`](docs/scoring.md)
+- Experiential learning design: [`docs/EXPERIENTIAL_LEARNING.md`](docs/EXPERIENTIAL_LEARNING.md)
 - Technical report: [`REPORT.md`](REPORT.md)
 - Tally checklist: [`SUBMISSION.md`](SUBMISSION.md)
 - ERP contract: [`docs/phoenix-openapi.yaml`](docs/phoenix-openapi.yaml)

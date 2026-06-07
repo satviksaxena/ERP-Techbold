@@ -10,6 +10,8 @@ from app.agent.azure_agent import AzureOpenAIAgent
 from app.agent.command_validator import is_valid_shell_command
 from app.agent.evidence import extract_from_output, format_evidence_for_llm, merge_evidence
 from app.agent.gemini_agent import GeminiAgentService
+from app.agent.fast_paths import has_fast_path, next_fast_path_command
+from app.agent.runbook_paths import has_runbook_path, next_runbook_path_command
 from app.agent.hackathon_commands import (
     enable_unit_from_command,
     fix_applied_after_last_public_test,
@@ -36,7 +38,7 @@ from app.agent.plan_resolver import (
     validation_succeeded_after_fix,
 )
 from app.agent.reflexion import command_already_failed, reflexion_context
-from app.agent.runbooks import retrieve_runbooks
+from app.agent.runbooks import classify_incident, retrieve_runbooks
 from app.agent.verifier import VerifierService
 from app.activity.generator import generate_activity_draft
 from app.audit.log import AuditLog
@@ -503,6 +505,29 @@ class AgentOrchestrator:
         ticket_uuid = ticket["id"]
         verifier_rec = self._current_verifier_recommend(ticket_uuid)
 
+        fast = next_fast_path_command(ticket, existing, self.safety)
+        if fast:
+            filtered = self._gate_proposal(fast, ticket_uuid, existing)
+            if filtered:
+                self.audit.record(
+                    "fast_path_queued",
+                    ticket_id=ticket_uuid,
+                    command=(filtered.get("command_text") or "")[:120],
+                )
+                return filtered
+
+        runbook = next_runbook_path_command(ticket, existing, self.safety, hypothesis=hypothesis)
+        if runbook:
+            filtered = self._gate_proposal(runbook, ticket_uuid, existing)
+            if filtered:
+                self.audit.record(
+                    "runbook_path_queued",
+                    ticket_id=ticket_uuid,
+                    command=(filtered.get("command_text") or "")[:120],
+                    incident_class=(classify_incident(ticket, hypothesis) or "")[:40],
+                )
+                return filtered
+
         if verifier_rec == "switch_path":
             hyp_data = self.hypothesis_store.get(ticket_uuid) or {}
             hypotheses = hyp_data.get("hypotheses") or []
@@ -606,7 +631,7 @@ class AgentOrchestrator:
                         return filtered
 
         baseline = self._gate_proposal(next_universal_baseline(existing, self.safety), ticket_uuid, existing)
-        if baseline:
+        if baseline and not has_fast_path(ticket) and not has_runbook_path(ticket):
             return baseline
 
         # Wrong pathway exhausted — try alternate hypotheses with diagnostics already complete.
@@ -674,6 +699,8 @@ class AgentOrchestrator:
                 cmd_text
             )
         if is_fix:
+            if proposal.get("_path_source") in ("fast_path", "runbook_path"):
+                return proposal
             verifier_rec = self._current_verifier_recommend(ticket_uuid)
             if verifier_rec in ("continue_diagnose", "switch_path"):
                 if verifier_rec == "switch_path" and proposal.get("from_path_switch"):
@@ -747,6 +774,8 @@ class AgentOrchestrator:
             ticket = self.store.get_ticket(existing[0]["ticket_id"])
         if self._is_public_test(proposal):
             if self._public_test_done(existing):
+                return None
+            if last_public_test_failed(existing) and not fix_applied_after_last_public_test(existing):
                 return None
             if proposal.get("plan_intent") == "validate":
                 return proposal
@@ -892,11 +921,10 @@ class AgentOrchestrator:
         }
 
         primary = (self.settings.llm_primary or "gemini").lower()
-        order = (
-            [("gemini", self.gemini), ("azure", self.azure)]
-            if primary == "gemini"
-            else [("azure", self.azure), ("gemini", self.gemini)]
-        )
+        if primary == "gemini":
+            order: list[tuple[str, Any]] = [("gemini", self.gemini)]
+        else:
+            order = [("azure", self.azure), ("gemini", self.gemini)]
         proposal: dict[str, str] | None = None
         for name, agent in order:
             if not agent.enabled:
@@ -1019,7 +1047,27 @@ class AgentOrchestrator:
                     self.audit.record("pipeline_stall_recovered", ticket_id=ticket_uuid, recovery="hackathon_validate")
                     return filtered
 
+        if last_public_test_failed(existing) and not fix_applied_after_last_public_test(existing):
+            for recovery_fn, recovery_name in (
+                (lambda: next_fast_path_command(ticket, existing, self.safety), "fast_path"),
+                (lambda: next_runbook_path_command(ticket, existing, self.safety, hypothesis=hypothesis), "runbook_path"),
+                (lambda: permission_fixup_fallback(ticket, existing, self.safety), "permission_fixup"),
+            ):
+                recovered = recovery_fn()
+                if recovered:
+                    filtered = self._gate_proposal(recovered, ticket_uuid, existing)
+                    if filtered:
+                        self.audit.record(
+                            "pipeline_stall_recovered",
+                            ticket_id=ticket_uuid,
+                            recovery=recovery_name,
+                        )
+                        return filtered
+            return None
+
         if self._executed_fix_commands(existing) and not public_test_passed(existing):
+            if last_public_test_failed(existing) and not fix_applied_after_last_public_test(existing):
+                return None
             safety = self.safety.evaluate(PUBLIC_TEST_COMMAND)
             proposal = {
                 "agent_name": "Problem Solver",
@@ -1750,11 +1798,10 @@ Previous commands and outputs are in the conversation."""
         audit_entries: list[dict[str, Any]],
     ) -> dict[str, str]:
         primary = (self.settings.llm_primary or "gemini").lower()
-        order = (
-            [("gemini", self.gemini), ("azure", self.azure)]
-            if primary == "gemini"
-            else [("azure", self.azure), ("gemini", self.gemini)]
-        )
+        if primary == "gemini":
+            order: list[tuple[str, Any]] = [("gemini", self.gemini)]
+        else:
+            order = [("azure", self.azure), ("gemini", self.gemini)]
         for name, agent in order:
             if not agent.enabled:
                 continue

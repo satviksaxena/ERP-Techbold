@@ -21,7 +21,12 @@ services:
       SSH_PRIVATE_KEY_PATH: ${SSH_PRIVATE_KEY_PATH:-/keys/case1_key.pem}
       SSH_USERNAME: ${SSH_USERNAME:-azureuser}
       MOCK_MODE: ${MOCK_MODE:-false}
-      LLM_PRIMARY: ${LLM_PRIMARY:-gemini}
+      # Always Gemini for proposals — do not override via .env
+      LLM_PRIMARY: gemini
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
+      GEMINI_THINKING_MODEL: ${GEMINI_THINKING_MODEL:-gemini-3.5-flash}
+      GEMINI_THINKING_LEVEL: ${GEMINI_THINKING_LEVEL:-high}
+      GEMINI_TICKET_THINKING_ENABLED: ${GEMINI_TICKET_THINKING_ENABLED:-true}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
