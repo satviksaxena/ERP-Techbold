@@ -169,6 +169,8 @@ class AgentOrchestrator:
             return None
 
         existing = self.store.list_commands(ticket_uuid)
+        if self._public_test_done(existing):
+            return None
         pending = [c for c in existing if c.get("human_status") == "Pending"]
         title = h.get("title") or f"path {idx + 1}"
 
@@ -343,6 +345,8 @@ class AgentOrchestrator:
         hypothesis: dict[str, Any],
         existing: list[dict[str, Any]],
     ) -> dict[str, str] | None:
+        if self._public_test_done(existing):
+            return None
         proposal = self._propose_for_hypothesis_path(ticket, hypothesis, existing)
         if not proposal:
             proposal = self._command_from_fix_strategy(hypothesis)

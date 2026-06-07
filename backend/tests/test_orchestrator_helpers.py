@@ -111,3 +111,30 @@ def test_command_from_fix_strategy_extracts_chown():
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     assert orch._needs_public_test([fix])
 
+
+def test_sync_command_stops_after_public_test_passes():
+    class FakeStore:
+        def list_commands(self, ticket_id):
+            return [
+                {
+                    "command_text": "sudo /opt/hackathon/public-test.sh",
+                    "human_status": "Approved",
+                    "output_logs": "OK\nexit code: 0",
+                }
+            ]
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch.store = FakeStore()
+    assert orch._sync_command_to_selected_path("ticket-1", {"hypotheses": [{"first_command": "ls"}], "selected_index": 0}) is None
+
+
+def test_propose_next_for_path_stops_after_public_test_passes():
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    assert orch._propose_next_for_path({"id": "ticket-1"}, {}, [
+        {
+            "command_text": "sudo /opt/hackathon/public-test.sh",
+            "human_status": "Approved",
+            "output_logs": "OK\nexit code: 0",
+        }
+    ]) is None
+
+

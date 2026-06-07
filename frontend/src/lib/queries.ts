@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { api } from "./api-client";
 import type { Activity, AiCommand, SystemInfo, Ticket } from "./types";
 
 type RealtimeChannel = ReturnType<typeof supabase.channel>;
@@ -195,3 +196,17 @@ export function useActivity(ticketId: string | undefined) {
 
   return q;
 }
+
+export function useSshPing(ticketId: string | undefined, enabled: boolean = true) {
+  return useQuery({
+    enabled: !!ticketId && enabled,
+    queryKey: ["ssh_ping", ticketId],
+    queryFn: async () => {
+      if (!ticketId) return null;
+      return api.pingSsh(ticketId);
+    },
+    refetchInterval: 5000,
+    refetchIntervalInBackground: false,
+  });
+}
+

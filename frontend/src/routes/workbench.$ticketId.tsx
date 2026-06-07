@@ -6,6 +6,7 @@ import {
   useCommands,
   useSystemInfo,
   useTicket,
+  useSshPing,
 } from "@/lib/queries";
 import { PriorityBadge, StatusBadge } from "@/components/badges";
 import { AgentStepper } from "@/components/agent-stepper";
@@ -63,7 +64,8 @@ function WorkbenchPage() {
   const { data: ticket, isLoading: tLoad, error: tErr } = useTicket(ticketRef);
   const ticketId = ticket?.id;
   const { data: sys } = useSystemInfo(ticketId);
-  const { data: cmds = [] } = useCommands(ticketId);
+  const { data: ping } = useSshPing(sys ? ticketId : undefined, !!sys);
+  const { data: cmds = [], isFetching: cmdsFetching } = useCommands(ticketId);
   const { data: activity } = useActivity(ticketId);
   const qc = useQueryClient();
 
@@ -255,40 +257,50 @@ function WorkbenchPage() {
                       {sys.system_notes}
                     </p>
                   )}
-                  <div className="flex items-center gap-2 pt-2 mt-2 border-t border-border/60">
-                    <span
-                      className={cn(
-                        "h-2.5 w-2.5 rounded-full pulse-dot",
-                        sshLive
-                          ? "bg-safe"
+                  <div className="flex items-center gap-2 pt-2 mt-2 border-t border-border/60 justify-between">
+                    <div className="flex items-center gap-2 flex-1">
+                      <span
+                        className={cn(
+                          "h-2.5 w-2.5 rounded-full pulse-dot",
+                          sshLive
+                            ? "bg-safe"
+                            : sys.connection_status === "Connected"
+                              ? "bg-warn"
+                              : sys.connection_status === "Failed"
+                                ? "bg-danger"
+                                : "bg-warn",
+                        )}
+                      />
+                      <span
+                        className={cn(
+                          "text-xs font-mono uppercase tracking-[0.2em]",
+                          sshLive
+                            ? "text-safe"
+                            : sys.connection_status === "Connected"
+                              ? "text-warn"
+                              : sys.connection_status === "Failed"
+                                ? "text-danger"
+                                : "text-warn",
+                        )}
+                      >
+                        ssh ·{" "}
+                        {sshLive
+                          ? "live"
                           : sys.connection_status === "Connected"
-                            ? "bg-warn"
-                            : sys.connection_status === "Failed"
-                              ? "bg-danger"
-                              : "bg-warn",
-                      )}
-                    />
-                    <span
-                      className={cn(
-                        "text-xs font-mono uppercase tracking-[0.2em]",
-                        sshLive
-                          ? "text-safe"
-                          : sys.connection_status === "Connected"
-                            ? "text-warn"
-                            : sys.connection_status === "Failed"
-                              ? "text-danger"
-                              : "text-warn",
-                      )}
-                    >
-                      ssh ·{" "}
-                      {sshLive
-                        ? "live"
-                        : sys.connection_status === "Connected"
-                          ? "linked"
-                          : sys.connection_status}
-                    </span>
-                    <Plug className="ml-auto h-4 w-4 text-muted-foreground" />
+                            ? "linked"
+                            : sys.connection_status}
+                      </span>
+                    </div>
+                    {ping && ping.latency_ms !== null && (
+                      <span className="text-[10px] font-mono text-muted-foreground">{ping.latency_ms}ms</span>
+                    )}
+                    <Plug className="h-4 w-4 text-muted-foreground" />
                   </div>
+                  {ping && ping.reason && (
+                    <div className="mt-2 text-[11px] font-mono text-danger rounded border border-danger/40 bg-danger/10 p-2">
+                      Failed: {ping.reason}
+                    </div>
+                  )}
                   {sys.connection_status === "Connected" && !sshLive && (
                     <div className="mt-2 text-[11px] font-mono text-warn rounded border border-warn/40 bg-warn/10 p-2">
                       SSH handshake OK — authorize a command to stream output in the terminal.
@@ -338,7 +350,6 @@ function WorkbenchPage() {
             {lastFailed && !pending && !validationPass.passed && (
               <FailedCommandRetry command={lastFailed} ticketId={ticketId} />
             )}
-
             <Panel
               title={pending ? "⚡ Agent Command Gate" : validationPass.passed ? "✓ Validation Complete" : "Command Gate"}
               subtitle={
@@ -352,14 +363,7 @@ function WorkbenchPage() {
             >
               {pending && !validationPass.passed ? (
                 <SafetyGate command={pending} />
-              ) : validationPass.passed ? (
-                <div className="rounded-lg border border-safe/40 bg-safe/10 p-6 text-center">
-                  <p className="text-sm font-medium text-safe">public-test.sh PASS (exit 0)</p>
-                  <p className="text-sm text-muted-foreground mt-2">
-                    {validationPass.detail ?? "Hackathon validation succeeded."} Edit the activity draft on the right and commit to Phoenix ERP.
-                  </p>
-                </div>
-              ) : (
+              ) : !validationPass.passed && (
                 <div className="rounded-lg border border-dashed border-border bg-background/30 p-8 text-center">
                   <p className="text-sm text-muted-foreground">
                     No AI command is awaiting authorization.
