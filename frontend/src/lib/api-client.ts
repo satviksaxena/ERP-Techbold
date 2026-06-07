@@ -71,7 +71,12 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
 }
 
 export const api = {
-  health: () => request<{ status: string }>("/health"),
+  health: () => request<{
+    status: string;
+    aws_status?: string;
+    aws_arn?: string;
+    aws_account?: string;
+  }>("/health"),
 
   syncTickets: () =>
     request<{ ok: boolean; count: number }>("/api/sync/tickets", { method: "POST" }),
