@@ -84,6 +84,9 @@ def get_orchestrator() -> AgentOrchestrator:
 @app.get("/health")
 def health() -> dict[str, str]:
     s = get_settings()
+    from app.aws.client import AWSClient
+    aws_client = AWSClient(s)
+    aws_test = aws_client.test_connection()
     return {
         "status": "ok",
         "mock_mode": str(s.mock_mode),
@@ -99,7 +102,11 @@ def health() -> dict[str, str]:
         "azure_openai_configured": str(bool(s.azure_openai_api_key and s.azure_openai_endpoint)),
         "azure_openai_deployment": s.azure_openai_deployment,
         "llm_primary": s.llm_primary,
+        "aws_status": aws_test.get("status", "error"),
+        "aws_arn": aws_test.get("arn", ""),
+        "aws_account": aws_test.get("account", ""),
     }
+
 
 
 @app.post("/api/sync/tickets")

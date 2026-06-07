@@ -8,10 +8,13 @@ services:
     environment:
       SSH_KEYS_DIR: /keys
       SSH_PRIVATE_KEY_PATH: ${SSH_PRIVATE_KEY_PATH:-/keys/case1_key.pem}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
     ports:
       - "8000:8000"
     volumes:
-      - ./tb-hackathon-ssh:/keys:ro
+      - ./keys:/keys:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     ssh_connect_retries: int = 3
     ssh_retry_delay_seconds: float = 2.0
     ssh_command_timeout: int = 120
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_default_region: str = "us-east-1"
 
     supabase_url: str = ""
     supabase_service_role_key: str = ""
