@@ -32,6 +32,9 @@ ONE-TIME SETUP (5 minutes)
        chmod 600 tb-hackathon-ssh/*.pem
 
   5. In Supabase SQL Editor, run once:  supabase/hack_ai_bootstrap.sql
+     (includes audit_events — required for persisted Audit Trail / learning pipeline)
+
+  See docs/EXPERIENTIAL_LEARNING.md for how resolved cases feed faster fixes on new tickets.
 
 --------------------------------------------------------------------------------
 RUN
@@ -60,6 +63,11 @@ RUN
   (Not laptop paths like /Users/you/...)
 
   VITE_API_BASE=http://localhost:8000
+
+  LLM_PRIMARY=gemini
+  GEMINI_API_KEY=...   (required for AI proposals)
+
+  Docker compose always sets LLM_PRIMARY=gemini in the container.
 
 --------------------------------------------------------------------------------
 WHAT DOCKER RUNS

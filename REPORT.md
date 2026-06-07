@@ -15,9 +15,21 @@ A three-tier system:
 
 1. **React workbench** — ticket matrix, live terminal, hypothesis pathways, command gate, audit trail, activity draft  
 2. **FastAPI backend** — Phoenix ERP sync, SSH execution, Gemini multi-agent orchestration, safety layer, audit log  
-3. **Supabase** — realtime UI state (tickets, commands, system info, activities, hypotheses)
+3. **Supabase** — realtime UI state (tickets, commands, system info, activities, audit_events, hypotheses)
 
 Every proposed command passes through a **slide-to-authorize gate**. The safety layer blocks hard-fail patterns from the rubric before SSH runs.
+
+## 2b. Experiential auto-learning (in progress)
+
+We are extending the platform so **past incidents teach future ones**:
+
+1. Each case generates a **persistent audit trail** (`audit_events`), command transcripts, hypothesis analysis, and a structured ERP activity.
+2. A **Learning Agent** (roadmap) will consume closed incidents and update fast paths, runbooks, and agent prompts.
+3. The **orchestrator** already prioritizes **fast paths** (`fast_paths.py`) — minimal command chains for tickets 7001–7005 — before exploratory LLM diagnostics.
+
+Outcome: similar symptoms → **shorter resolution** with **correct commands**, while humans retain approval control.
+
+Details: [`docs/EXPERIENTIAL_LEARNING.md`](./docs/EXPERIENTIAL_LEARNING.md)
 
 ## 3. Architecture
 
@@ -57,7 +69,8 @@ Gemini generates **three ranked pathways** (title, root cause, fix strategy, fir
 
 - **SafetyLayer** blocks: recursive chmod 777, DROP DATABASE, firewall disable, log wiping, secret patterns  
 - **AuditLog** records: sync, SSH, command executed/failed/rejected/retry, hypothesis selection, activity submit  
-- **Audit Trail panel** in workbench (live poll of `GET /api/audit`) for jury demo  
+- **Persistence:** `audit_events` in Supabase + `audit.jsonl` on disk (survives backend restart)  
+- **Audit Trail panel** in workbench (`GET /api/audit`) — jury-visible, feeds experiential learning pipeline  
 - Secrets: `.env` and `*.pem` gitignored; service role key backend-only  
 
 ## 6. ERP integration
@@ -107,7 +120,7 @@ cp .env.example .env   # fill credentials
 
 - VMs 7002/7003/7005 may be intermittently unreachable (organiser network)  
 - LLM proposals can be wrong — human gate is the correctness backstop  
-- Audit log is in-memory per backend process (sufficient for hackathon demo; persisted in server logs)  
+- Audit is **persisted** in Supabase; Learning Agent auto-update loop is roadmap (fast paths shipped)  
 - UI targets desktop technicians; mobile is out of scope  
 
 ## 11. Demo script (3–4 min)

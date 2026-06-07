@@ -205,22 +205,30 @@ def test_realign_pending_replaces_diagnostic_with_public_test():
     class FakeStore:
         def __init__(self):
             self.commands = [
-                {
-                    "id": "fix-1",
-                    "ticket_id": "t1",
-                    "command_text": "sudo systemctl enable --now customer-status.service",
-                    "human_status": "Approved",
-                    "output_logs": "exit code: 0",
-                    "created_at": "1",
-                },
-                {
-                    "id": "pending-1",
-                    "ticket_id": "t1",
-                    "command_text": "sudo systemctl status nginx --no-pager -l || true",
-                    "human_status": "Pending",
-                    "output_logs": "",
-                    "created_at": "2",
-                },
+        {
+            "id": "fix-1",
+            "ticket_id": "t1",
+            "command_text": "systemctl is-enabled status-api.service",
+            "human_status": "Approved",
+            "output_logs": "disabled\nexit code: 0",
+            "created_at": "1",
+        },
+        {
+            "id": "fix-2",
+            "ticket_id": "t1",
+            "command_text": "sudo systemctl enable --now status-api.service",
+            "human_status": "Approved",
+            "output_logs": "exit code: 0",
+            "created_at": "2",
+        },
+        {
+            "id": "pending-1",
+            "ticket_id": "t1",
+            "command_text": "sudo systemctl status nginx --no-pager -l || true",
+            "human_status": "Pending",
+            "output_logs": "",
+            "created_at": "3",
+        },
             ]
             self.ticket = {
                 "id": "t1",
@@ -324,3 +332,67 @@ def test_propose_next_for_path_stops_after_public_test_passes():
     ]) is None
 
 
+def test_filter_proposal_blocks_validate_public_test_loop_after_failure():
+    proposal = {
+        "agent_name": "Problem Solver",
+        "command_text": "sudo /opt/hackathon/public-test.sh",
+        "script_diff": "+ stall recovery",
+        "safety_status": "Safe",
+        "human_status": "Pending",
+        "output_logs": "",
+        "plan_intent": "validate",
+    }
+    existing = [
+        {
+            "command_text": "sudo chmod -R 775 /var/www/uploads",
+            "human_status": "Approved",
+            "output_logs": "exit code: 0",
+        },
+        {
+            "command_text": "sudo /opt/hackathon/public-test.sh",
+            "human_status": "Approved",
+            "output_logs": "FAIL: document upload workflow failed\nexit code: 1",
+        },
+    ]
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch.audit = type("A", (), {"record": lambda *a, **k: None})()
+    assert orch._filter_proposal(proposal, existing) is None
+
+
+def test_recover_stalled_queues_chown_not_public_test_after_failed_validation():
+    from app.safety.layer import SafetyLayer
+
+    ticket = {
+        "id": "t-7002",
+        "ticket_code": "7002",
+        "title": "Document uploads fail with permission denied",
+        "report_text": "permission denied on uploads",
+    }
+    commands = [
+        {
+            "command_text": "stat /srv/customer-portal/uploads",
+            "human_status": "Approved",
+            "output_logs": "root:root /srv/customer-portal/uploads\nexit code: 0",
+        },
+        {
+            "command_text": "sudo chmod -R 775 /var/www/uploads",
+            "human_status": "Approved",
+            "output_logs": "exit code: 0",
+        },
+        {
+            "command_text": "sudo /opt/hackathon/public-test.sh",
+            "human_status": "Approved",
+            "output_logs": "FAIL: document upload workflow failed\nexit code: 1",
+        },
+    ]
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch.safety = SafetyLayer()
+    orch.audit = type("A", (), {"record": lambda *a, **k: None})()
+    orch.hypothesis_store = type("H", (), {"get": lambda s, tid: None})()
+    orch._current_verifier_recommend = lambda _tid: "switch_path"
+
+    recovered = orch._recover_stalled_pipeline(ticket, commands, None)
+    assert recovered is not None
+    assert "public-test.sh" not in recovered["command_text"]
+    assert "chown" in recovered["command_text"]
+    assert "www-data" in recovered["command_text"]

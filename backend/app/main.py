@@ -20,7 +20,21 @@ from app.store.supabase_store import SupabaseStore
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-audit_log = AuditLog()
+
+def _init_audit_log() -> AuditLog:
+    """Memory + file + Supabase persistence for jury audit trail."""
+    settings = get_settings()
+    log = AuditLog(log_path="audit.jsonl")
+    try:
+        store = SupabaseStore(settings)
+        log = AuditLog(log_path="audit.jsonl", persist_fn=store.insert_audit_event)
+        logger.info("Audit log persisting to Supabase audit_events")
+    except Exception as exc:
+        logger.warning("Audit Supabase persist unavailable: %s", exc)
+    return log
+
+
+audit_log = _init_audit_log()
 _safety = SafetyLayer()
 
 
@@ -284,8 +298,15 @@ def ping_ssh(ticket_id: str, orch: AgentOrchestrator = Depends(get_orchestrator)
 
 @app.get("/api/audit")
 def get_audit(ticket_id: str | None = None) -> dict[str, Any]:
-    entries = audit_log.list_entries(ticket_id)
-    return {"entries": entries}
+    """Return persisted audit trail (Supabase) with in-memory session fallback."""
+    try:
+        store = SupabaseStore(get_settings())
+        entries = store.list_audit_events(ticket_id)
+        if entries:
+            return {"entries": entries}
+    except Exception as exc:
+        logger.warning("Audit read from Supabase failed: %s", exc)
+    return {"entries": audit_log.list_entries(ticket_id)}
 
 
 @app.post("/api/workspace/reset")

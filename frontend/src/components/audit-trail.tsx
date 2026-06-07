@@ -52,7 +52,7 @@ export function AuditTrail({ ticketId }: { ticketId: string | undefined }) {
       : "No audit events yet — authorize a command to populate";
 
   return (
-    <CollapsiblePanel title="Audit Trail" subtitle="live · backend log" summary={summary}>
+    <CollapsiblePanel title="Audit Trail" subtitle="persisted · Supabase + backend" summary={summary}>
       {isLoading && !entries.length ? (
         <p className="text-xs text-muted-foreground">Loading audit log…</p>
       ) : recent.length === 0 ? (

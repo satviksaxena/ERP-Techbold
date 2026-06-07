@@ -33,3 +33,4 @@ _tmp/
 # Logs
 *.log
 audit.log
+audit.jsonl

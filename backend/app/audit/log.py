@@ -4,17 +4,26 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Protocol
 
 logger = logging.getLogger("audit")
 
 
-class AuditLog:
-    """In-memory + file audit trail for every command and key action."""
+class AuditPersistFn(Protocol):
+    def __call__(self, entry: dict[str, Any]) -> None: ...
 
-    def __init__(self, log_path: str | None = None):
+
+class AuditLog:
+    """Audit trail for every command and key action — memory + optional Supabase/file."""
+
+    def __init__(
+        self,
+        log_path: str | None = None,
+        persist_fn: AuditPersistFn | None = None,
+    ):
         self._entries: list[dict[str, Any]] = []
         self._path = Path(log_path) if log_path else None
+        self._persist_fn = persist_fn
 
     def record(self, action: str, **details: Any) -> dict[str, Any]:
         entry = {
@@ -28,6 +37,11 @@ class AuditLog:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, default=str) + "\n")
+        if self._persist_fn:
+            try:
+                self._persist_fn(entry)
+            except Exception as exc:
+                logger.warning("Audit persist failed: %s", exc)
         return entry
 
     def list_entries(self, ticket_id: str | None = None) -> list[dict[str, Any]]:
