@@ -10,6 +10,7 @@ def empty_evidence() -> dict[str, Any]:
         "failed_units": [],
         "disabled_units": [],
         "full_filesystems": [],
+        "readonly_mounts": [],
         "listening_ports": [],
         "error_lines": [],
         "service_states": {},
@@ -20,7 +21,7 @@ def empty_evidence() -> dict[str, Any]:
 def merge_evidence(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     out = empty_evidence()
     out.update(base or {})
-    for key in ("failed_units", "disabled_units", "full_filesystems", "listening_ports", "error_lines"):
+    for key in ("failed_units", "disabled_units", "full_filesystems", "readonly_mounts", "listening_ports", "error_lines"):
         merged = list(dict.fromkeys((out.get(key) or []) + (patch.get(key) or [])))
         out[key] = merged[:50]
     states = dict(out.get("service_states") or {})
@@ -74,6 +75,14 @@ def extract_from_output(command_text: str, output_logs: str) -> dict[str, Any]:
             if re.search(r"\b9[0-9]%\b|\b100%\b", line):
                 patch["full_filesystems"].append(line.strip()[:120])
 
+    if "mount" in cmd_lower or "findmnt" in cmd_lower:
+        for line in output.splitlines():
+            ll = line.lower()
+            if any(tok in ll for tok in (",ro,", "(ro,", "read-only", "read only")):
+                cleaned = line.strip()[:120]
+                if cleaned and cleaned not in patch["readonly_mounts"]:
+                    patch["readonly_mounts"].append(cleaned)
+
     if "ss " in cmd_lower or "listen" in lower:
         for line in output.splitlines():
             if "LISTEN" in line or "listen" in line.lower():
@@ -107,6 +116,8 @@ def format_evidence_for_llm(evidence: dict[str, Any]) -> str:
         lines.append("Service states: " + "; ".join(f"{u}={s}" for u, s in states))
     if evidence.get("full_filesystems"):
         lines.append("Full filesystems: " + "; ".join(evidence["full_filesystems"][:3]))
+    if evidence.get("readonly_mounts"):
+        lines.append("Read-only mounts: " + "; ".join(evidence["readonly_mounts"][:3]))
     if evidence.get("listening_ports"):
         lines.append("Listening ports: " + ", ".join(evidence["listening_ports"][:15]))
     if evidence.get("error_lines"):

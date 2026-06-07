@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.agent.command_validator import is_valid_shell_command
 from app.agent.evidence import format_evidence_for_llm
 from app.config import Settings
 
@@ -25,17 +26,30 @@ class VerifierResult(BaseModel):
 VERIFIER_SCHEMA = VerifierResult.model_json_schema()
 
 
+def _mount_diagnostics_executed(commands: list[dict[str, Any]] | None) -> bool:
+    for cmd in commands or []:
+        if cmd.get("human_status") not in ("Approved", "Edited"):
+            continue
+        text = (cmd.get("command_text") or "").lower()
+        if text.startswith("mount ") or "mount |" in text or "findmnt" in text:
+            return True
+    return False
+
+
 def verify_rule_based(
     hypothesis: dict[str, Any] | None,
     evidence: dict[str, Any],
     *,
     diagnostic_count: int,
     has_fix: bool,
+    report_text: str = "",
+    commands: list[dict[str, Any]] | None = None,
 ) -> VerifierResult:
     """Fast deterministic verifier — no LLM required."""
     failed = evidence.get("failed_units") or []
     disabled = evidence.get("disabled_units") or []
     full_fs = evidence.get("full_filesystems") or []
+    readonly = evidence.get("readonly_mounts") or []
     errors = evidence.get("error_lines") or []
 
     title = (hypothesis or {}).get("title", "").lower()
@@ -61,7 +75,10 @@ def verify_rule_based(
         k in title + root for k in ("service", "systemd", "boot", "enabled", "unit", "down")
     )
     perm_hypothesis = any(k in title + root for k in ("permission", "chown", "chmod", "owner"))
-    disk_hypothesis = any(k in title + root for k in ("disk", "space", "full", "storage"))
+    disk_hypothesis = any(
+        k in title + root
+        for k in ("disk", "space", "full", "storage", "read-only", "readonly", "filesystem")
+    )
 
     if service_hypothesis and (failed or disabled):
         units = failed or disabled
@@ -80,6 +97,14 @@ def verify_rule_based(
             confidence="medium",
         )
 
+    if disk_hypothesis and readonly:
+        return VerifierResult(
+            hypothesis_supported=True,
+            recommend="apply_fix",
+            evidence_summary=f"Read-only mount detected: {readonly[0][:80]}",
+            confidence="high",
+        )
+
     if perm_hypothesis and errors and any("denied" in e.lower() or "permission" in e.lower() for e in errors):
         return VerifierResult(
             hypothesis_supported=True,
@@ -89,6 +114,25 @@ def verify_rule_based(
         )
 
     if diagnostic_count >= 3 and not (failed or disabled or full_fs):
+        report = (report_text or "").lower()
+        if service_hypothesis and any(
+            k in report for k in ("reboot", "boot", "unavailable", "8080", "enable", "restart")
+        ):
+            return VerifierResult(
+                hypothesis_supported=True,
+                recommend="apply_fix",
+                evidence_summary=(
+                    "Boot/reboot service symptom after diagnostics — apply systemctl enable --now fix."
+                ),
+                confidence="medium",
+            )
+        if disk_hypothesis and not readonly and not _mount_diagnostics_executed(commands):
+            return VerifierResult(
+                hypothesis_supported=False,
+                recommend="continue_diagnose",
+                evidence_summary="Disk/read-only path — inspect mount options before switching paths.",
+                confidence="medium",
+            )
         return VerifierResult(
             hypothesis_supported=False,
             recommend="switch_path",
@@ -133,16 +177,36 @@ class VerifierService:
         diagnostic_count = len(
             [c for c in executed if not _looks_like_fix(c.get("command_text") or "")]
         )
-        has_fix = any(_looks_like_fix(c.get("command_text") or "") for c in executed)
+        has_fix = any(
+            _looks_like_fix(c.get("command_text") or "")
+            and not _command_output_failed(c.get("output_logs") or "")
+            for c in executed
+        )
+        public_test_failed = any(
+            "public-test.sh" in (c.get("command_text") or "").lower()
+            and c.get("human_status") in ("Approved", "Edited")
+            and _command_output_failed(c.get("output_logs") or "")
+            for c in commands
+        )
+        public_test_passed = any(
+            "public-test.sh" in (c.get("command_text") or "").lower()
+            and c.get("human_status") in ("Approved", "Edited")
+            and not _command_output_failed(c.get("output_logs") or "")
+            for c in commands
+        )
+        if public_test_failed and not public_test_passed:
+            has_fix = False
 
         baseline = verify_rule_based(
             hypothesis,
             evidence,
             diagnostic_count=diagnostic_count,
             has_fix=has_fix,
+            report_text=(ticket.get("report_text") or ""),
+            commands=commands,
         )
 
-        if not self.llm_enabled or baseline.recommend in ("validate", "apply_fix") and baseline.confidence == "high":
+        if not self.llm_enabled or baseline.confidence in ("high", "medium"):
             return baseline
 
         try:
@@ -182,9 +246,18 @@ Only recommend apply_fix when evidence clearly supports the hypothesis."""
             return baseline
 
 
+def _command_output_failed(output_logs: str | None) -> bool:
+    output = (output_logs or "").lower()
+    if "execution failed" in output:
+        return True
+    if "exit code:" in output and "exit code: 0" not in output:
+        return True
+    if "[exit " in output and "[exit 0]" not in output:
+        return True
+    return False
+
+
 def _looks_like_fix(command_text: str) -> bool:
-    t = command_text.lower()
-    return any(
-        m in t
-        for m in ("chmod", "chown", "systemctl restart", "systemctl start", "systemctl enable", "sed -i")
-    )
+    from app.agent.command_intent import is_fix_command
+
+    return is_fix_command(command_text) and is_valid_shell_command(command_text)

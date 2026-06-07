@@ -14,6 +14,22 @@ def test_command_output_failed_ignores_success():
     assert not AgentOrchestrator._command_output_failed("metrics loaded\n[exit 0]")
 
 
+def test_public_test_done_uses_latest_run_only():
+    commands = [
+        {
+            "command_text": "sudo /opt/hackathon/public-test.sh",
+            "human_status": "Approved",
+            "output_logs": "OK\nexit code: 0",
+        },
+        {
+            "command_text": "sudo /opt/hackathon/public-test.sh",
+            "human_status": "Approved",
+            "output_logs": "FAIL\nexit code: 1",
+        },
+    ]
+    assert not AgentOrchestrator._public_test_done(commands)
+
+
 def test_public_test_done_detects_exit_zero():
     commands = [
         {
@@ -70,7 +86,8 @@ def test_needs_public_test_not_after_diagnostics_only():
     }
     assert not AgentOrchestrator._looks_like_fix(diagnostic["command_text"])
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    assert not orch._needs_public_test([diagnostic])
+    ticket = {"ticket_code": "7001"}
+    assert not orch._needs_public_test(ticket, [diagnostic])
 
 
 def test_filter_proposal_blocks_premature_public_test():
@@ -110,6 +127,24 @@ def test_enforce_verifier_blocks_premature_fix():
     assert result is None
 
 
+def test_should_hold_for_retry_false_after_public_test_fail():
+    cmd = {
+        "command_text": "sudo /opt/hackathon/public-test.sh",
+        "human_status": "Approved",
+        "output_logs": "FAIL\nexit code: 1",
+    }
+    assert not AgentOrchestrator._should_hold_for_retry(cmd)
+
+
+def test_should_hold_for_retry_false_for_diagnostic_grep():
+    cmd = {
+        "command_text": "systemctl list-unit-files --type=service | grep -iE 'status|api'",
+        "human_status": "Approved",
+        "output_logs": "exit code: 1",
+    }
+    assert not AgentOrchestrator._should_hold_for_retry(cmd)
+
+
 def test_command_from_fix_strategy_extracts_chown():
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch.safety = __import__("app.safety.layer", fromlist=["SafetyLayer"]).SafetyLayer()
@@ -122,11 +157,12 @@ def test_command_from_fix_strategy_extracts_chown():
     assert "chown" in cmd["command_text"]
 
     fix = {
-        "command_text": "sudo chown -R www-data:www-data /var/www/uploads",
+        "command_text": "sudo systemctl enable --now status-api.service",
         "human_status": "Approved",
         "output_logs": "exit code: 0",
     }
     assert AgentOrchestrator._looks_like_fix(fix["command_text"])
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    assert orch._needs_public_test([fix])
+    ticket = {"ticket_code": "7001"}
+    assert orch._needs_public_test(ticket, [fix])
 

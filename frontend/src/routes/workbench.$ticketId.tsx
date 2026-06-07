@@ -13,7 +13,7 @@ import { TerminalEmulator } from "@/components/terminal-emulator";
 import { SafetyGate } from "@/components/safety-gate";
 import { ActivityDraft } from "@/components/activity-draft";
 import { HypothesisTabs } from "@/components/hypothesis-tabs";
-import { AuditTrail, lastFailedCommand, publicTestPassed } from "@/components/audit-trail";
+import { AuditTrail, incidentResolved, lastFailedCommand } from "@/components/audit-trail";
 import { FailedCommandRetry } from "@/components/failed-command-retry";
 import { ValidationPassBanner } from "@/components/validation-pass-banner";
 import { CollapsiblePanel, truncateSummary } from "@/components/collapsible-panel";
@@ -71,7 +71,10 @@ function WorkbenchPage() {
     () => [...cmds].reverse().find((c) => c.human_status === "Pending"),
     [cmds],
   );
-  const validationPass = useMemo(() => publicTestPassed(cmds), [cmds]);
+  const validationPass = useMemo(
+    () => incidentResolved(cmds, ticket),
+    [cmds, ticket],
+  );
   const lastFailed = useMemo(() => lastFailedCommand(cmds), [cmds]);
   const executedCount = useMemo(
     () => cmds.filter((c) => c.human_status === "Approved" || c.human_status === "Edited").length,
@@ -330,7 +333,10 @@ function WorkbenchPage() {
             </Panel>
 
             <Panel title="Agent Pipeline">
-              <AgentStepper active={ticket.active_agent} />
+              <AgentStepper
+                active={validationPass.passed ? "Activity Log Generator" : ticket.active_agent}
+                resolved={validationPass.passed || ticket.status === "Fixed"}
+              />
             </Panel>
           </aside>
 
@@ -352,7 +358,7 @@ function WorkbenchPage() {
 
             <HypothesisTabs ticketId={ticketId} commands={cmds} validationPassed={validationPass.passed} />
 
-            {validationPass.passed && <ValidationPassBanner commands={cmds} />}
+            {validationPass.passed && <ValidationPassBanner commands={cmds} ticket={ticket} />}
 
             {lastFailed && !pending && !validationPass.passed && (
               <FailedCommandRetry command={lastFailed} ticketId={ticketId} />
@@ -379,7 +385,7 @@ function WorkbenchPage() {
                 <div className="rounded-lg border border-safe/40 bg-safe/10 p-6 text-center">
                   <p className="text-sm font-medium text-safe">public-test.sh PASS (exit 0)</p>
                   <p className="text-sm text-muted-foreground mt-2">
-                    {validationPass.detail ?? "Hackathon validation succeeded."} Edit the activity draft on the right and commit to Phoenix ERP.
+                    {validationPass.detail ?? "Fix validated successfully."} Edit the activity draft on the right and commit to Phoenix ERP.
                   </p>
                 </div>
               ) : (

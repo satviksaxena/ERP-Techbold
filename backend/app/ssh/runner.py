@@ -6,7 +6,8 @@ import paramiko
 
 from app.config import Settings
 from app.safety.layer import SafetyLayer
-from app.ssh.connect import SSHError, is_ssh_auth_error, is_transient_ssh_error, open_ssh_client
+from app.ssh.connect import SSHError, is_ssh_auth_error, is_transient_ssh_error
+from app.ssh.session_pool import get_session_pool
 
 
 @dataclass
@@ -27,22 +28,19 @@ class SSHRunner:
 
     def _connect(self, host: str, port: int, key_path: str | None = None) -> paramiko.SSHClient:
         path = key_path or self._key_path
+        pool = get_session_pool(self.settings)
         try:
-            return open_ssh_client(
-                self.settings,
-                host,
-                port,
-                self._username,
-                path,
-            )
+            return pool.get_or_connect(host, port, self._username, path)
         except SSHError:
             raise
         except Exception as exc:
             raise SSHError(f"SSH connection failed: {exc}") from exc
 
     def test_connection(self, host: str, port: int = 22, key_path: str | None = None) -> None:
+        """Verify SSH and keep session in pool for subsequent commands."""
         client = self._connect(host, port, key_path)
-        client.close()
+        if not client.get_transport() or not client.get_transport().is_active():
+            raise SSHError(f"SSH connection to {host}:{port} failed: transport inactive")
 
     def run(self, host: str, port: int, command: str, key_path: str | None = None) -> SSHResult:
         safety = self.safety.evaluate(command)
@@ -52,8 +50,9 @@ class SSHRunner:
         import time
 
         start = time.monotonic()
-        client = self._connect(host, port, key_path)
+        pool = get_session_pool(self.settings)
         try:
+            client = self._connect(host, port, key_path)
             _, stdout, stderr = client.exec_command(
                 command,
                 timeout=self.settings.ssh_command_timeout,
@@ -61,8 +60,15 @@ class SSHRunner:
             out = stdout.read().decode("utf-8", errors="replace")
             err = stderr.read().decode("utf-8", errors="replace")
             exit_code = stdout.channel.recv_exit_status()
-        finally:
-            client.close()
+        except SSHError as exc:
+            if is_ssh_auth_error(exc):
+                pool.invalidate(host, port, self._username)
+            elif is_transient_ssh_error(exc):
+                pool.invalidate(host, port, self._username)
+            raise
+        except Exception as exc:
+            pool.invalidate(host, port, self._username)
+            raise SSHError(f"SSH command failed: {exc}") from exc
 
         duration_ms = int((time.monotonic() - start) * 1000)
         return SSHResult(

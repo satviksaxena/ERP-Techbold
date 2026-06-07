@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.agent.agent_prompts import get_system_instruction, is_valid_agent
+from app.agent.command_validator import is_valid_shell_command
 from app.agent.llm_schemas import AGENT_ROLES, ActivityDraft, CommandProposal
 from app.config import Settings
 from app.safety.layer import SafetyLayer
@@ -81,6 +82,8 @@ Commands executed so far:
 
 You are acting as: {agent_name}
 Suggest the NEXT single shell command for this phase.
+command_text MUST be one executable shell line only — no English sentences, no placeholders like <service_name>.
+If proposing a fix, use a concrete command such as: sudo systemctl enable --now status-api.service
 If verifier says continue_diagnose, do NOT propose fix commands.
 If proposing a fix, prefer systemctl enable --now for persistence."""
 
@@ -99,6 +102,10 @@ If proposing a fix, prefer systemctl enable --now for persistence."""
             raw = (response.text or "").strip()
             data = json.loads(raw)
             proposal = CommandProposal.model_validate(data)
+
+            if not is_valid_shell_command(proposal.command_text):
+                logger.warning("Gemini returned invalid shell command: %s", proposal.command_text[:120])
+                return None
 
             if not is_valid_agent(proposal.agent_name):
                 proposal.agent_name = agent_name

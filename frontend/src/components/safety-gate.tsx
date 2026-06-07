@@ -8,6 +8,7 @@ import { AlertTriangle, ShieldCheck, ShieldX, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
+import { supabase } from "@/integrations/supabase/client";
 import { commandFailed } from "@/components/audit-trail";
 import type { AiCommand as AiCommandType } from "@/lib/types";
 
@@ -28,7 +29,24 @@ export function SafetyGate({ command }: { command: AiCommand }) {
   const Icon = style.icon;
   const blocked = command.safety_status === "Blocked";
 
+  const isPublicTest = (command.command_text || "").toLowerCase().includes("public-test");
+  const looksLikeWrongValidationLoop =
+    isPublicTest &&
+    (command.script_diff || "").toLowerCase().includes("re-run hackathon validation");
   const isEdited = useMemo(() => edited.trim() !== command.command_text.trim(), [edited, command.command_text]);
+
+  async function waitForNextCommand(ticketId: string) {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const { data } = await supabase
+        .from("ai_commands")
+        .select("human_status")
+        .eq("ticket_id", ticketId)
+        .order("created_at", { ascending: false })
+        .limit(5);
+      if ((data ?? []).some((c) => c.human_status === "Pending")) return;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
 
   async function authorize() {
     if (blocked || busy) return;
@@ -58,6 +76,14 @@ export function SafetyGate({ command }: { command: AiCommand }) {
         toast.success(
           (isEdited ? "Edited command executed" : "Command authorized & executed") + passMsg,
         );
+        if (!failed) {
+          toast.message("Preparing next command…", { duration: 2500 });
+          void waitForNextCommand(command.ticket_id).then(() => {
+            qc.invalidateQueries({ queryKey: ["commands", command.ticket_id] });
+            qc.invalidateQueries({ queryKey: ["hypotheses", command.ticket_id] });
+            qc.invalidateQueries({ queryKey: ["activity", command.ticket_id] });
+          });
+        }
       }
       qc.invalidateQueries({ queryKey: ["commands", command.ticket_id] });
       qc.invalidateQueries({ queryKey: ["ticket", command.ticket_id] });
@@ -121,6 +147,16 @@ export function SafetyGate({ command }: { command: AiCommand }) {
           </div>
           <p className="text-[12px] text-muted-foreground leading-relaxed whitespace-pre-wrap">
             {(command as AiCommand & { agent_reasoning?: string }).agent_reasoning}
+          </p>
+        </div>
+      )}
+
+      {looksLikeWrongValidationLoop && (
+        <div className="rounded-md border border-warn/40 bg-warn/10 p-3 mb-3">
+          <p className="text-[12px] text-warn leading-relaxed">
+            Validation failed — reject this and wait for{" "}
+            <span className="font-mono">sudo systemctl enable --now status-api.service</span>{" "}
+            (ticket 7001 grading target), then run public-test again.
           </p>
         </div>
       )}

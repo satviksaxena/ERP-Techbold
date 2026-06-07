@@ -22,6 +22,38 @@ def test_verifier_apply_fix_on_failed_units():
     assert result.hypothesis_supported is True
 
 
-def test_verifier_validate_after_fix():
+def test_verifier_apply_fix_after_reboot_diagnostics():
+    result = verify_rule_based(
+        {"title": "Service down", "likely_root_cause": "systemd unit not enabled on boot"},
+        {},
+        diagnostic_count=4,
+        has_fix=False,
+        report_text="Status API unavailable after reboot until manual restart",
+    )
+    assert result.recommend == "apply_fix"
+
+
+def test_verifier_apply_fix_on_readonly_mount():
+    result = verify_rule_based(
+        {"title": "Disk read-only", "likely_root_cause": "filesystem mounted read-only"},
+        {"readonly_mounts": ["/dev/sda1 on / type ext4 (ro,relatime)"]},
+        diagnostic_count=3,
+        has_fix=False,
+    )
+    assert result.recommend == "apply_fix"
+
+def test_verifier_continue_diagnose_disk_before_mount_check():
+    result = verify_rule_based(
+        {"title": "Disk read-only", "likely_root_cause": "filesystem mounted read-only"},
+        {},
+        diagnostic_count=4,
+        has_fix=False,
+        commands=[
+            {"command_text": "df -h", "human_status": "Approved"},
+            {"command_text": "ss -tlnp | head -30", "human_status": "Approved"},
+        ],
+    )
+    assert result.recommend == "continue_diagnose"
+
     result = verify_rule_based(None, {}, diagnostic_count=3, has_fix=True)
     assert result.recommend == "validate"

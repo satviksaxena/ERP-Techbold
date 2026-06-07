@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from app.agent.llm_schemas import HypothesisItem, HypothesisList
+from app.agent.plan_resolver import ensure_plan
 from app.agent.azure_agent import AzureOpenAIAgent
 from app.agent.gemini_agent import GeminiAgentService
 from app.agent.ticket_understanding import TicketUnderstandingService
@@ -25,12 +26,18 @@ Priority: {priority}
 Return JSON: {{"hypotheses": [
   {{"title": "short tab label", "summary": "...", "likely_root_cause": "...",
     "confidence": "high|medium|low", "first_command": "safe read-only shell cmd",
-    "fix_strategy": "what we'd do if this hypothesis is correct"}}
+    "fix_strategy": "what we'd do if this hypothesis is correct",
+    "steps": [
+      {{"agent_name": "Customer System Analyzer", "command_text": "...", "script_diff": "+ ...", "intent": "diagnostic"}},
+      {{"agent_name": "Problem Solver", "command_text": "sudo ...", "script_diff": "+ ...", "intent": "fix"}}
+    ]}}
 ]}}
 
 Rules:
 - Hypotheses must be meaningfully different (not rewordings)
 - first_command must be safe diagnostics (no destructive ops)
+- steps: 3–6 ordered commands per hypothesis (diagnostics first, then fix if needed)
+- Each step must be ONE shell command; tag intent as diagnostic, fix, or validate
 - Prefer hypotheses grounded in the customer symptom
 - Include at least one service/config hypothesis and one resource/permission hypothesis when plausible"""
 
@@ -212,10 +219,12 @@ class HypothesisGenerator:
             except Exception as exc:
                 logger.warning("Gemini hypothesis generation failed: %s", exc)
 
-        return _fallback_hypotheses(ticket)
+        return [ensure_plan(h) for h in _fallback_hypotheses(ticket)]
 
     def _sanitize_item(self, item: HypothesisItem) -> dict[str, Any]:
+        from app.agent.plan_resolver import ensure_plan
+
         safety = self.safety.evaluate(item.first_command)
-        data = item.model_dump()
+        data = ensure_plan(item.model_dump())
         data["safety_status"] = safety.status
         return data

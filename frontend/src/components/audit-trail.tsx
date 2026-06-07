@@ -122,3 +122,71 @@ export function publicTestPassed(
   }
   return { passed: false };
 }
+
+function commandSucceeded(output: string): boolean {
+  const lower = output.toLowerCase();
+  if (lower.includes("execution failed")) return false;
+  if (lower.includes("exit code:") && !lower.includes("exit code: 0")) return false;
+  if (lower.includes("[exit ") && !lower.includes("[exit 0]")) return false;
+  return true;
+}
+
+function isFixCommand(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    t.includes("chmod") ||
+    t.includes("chown") ||
+    t.includes("systemctl restart") ||
+    t.includes("systemctl start") ||
+    t.includes("systemctl enable") ||
+    t.includes("mount -o remount") ||
+    t.includes("sed -i")
+  );
+}
+
+function usesPublicTestGrading(
+  commands: { command_text?: string }[],
+): boolean {
+  return commands.some((c) => (c.command_text || "").toLowerCase().includes("public-test"));
+}
+
+/** Matches backend _incident_resolved — hackathon tickets require latest public-test pass. */
+export function incidentResolved(
+  commands: { command_text?: string; human_status?: string; output_logs?: string | null }[],
+  ticket?: { status?: string | null; ticket_code?: string | null },
+): { passed: boolean; detail?: string } {
+  const hackathonGrading = usesPublicTestGrading(commands);
+
+  if (hackathonGrading) {
+    const pub = publicTestPassed(commands);
+    if (pub.passed) return pub;
+    return { passed: false };
+  }
+
+  if (ticket?.status === "Fixed") {
+    return { passed: true, detail: "Fix validated — ready to commit activity to Phoenix ERP." };
+  }
+
+  let lastFixIdx = -1;
+  for (let i = commands.length - 1; i >= 0; i--) {
+    const c = commands[i];
+    if (c.human_status !== "Approved" && c.human_status !== "Edited") continue;
+    const cmd = c.command_text || "";
+    if (isFixCommand(cmd) && commandSucceeded(c.output_logs || "")) {
+      lastFixIdx = i;
+      break;
+    }
+  }
+  if (lastFixIdx < 0) return { passed: false };
+
+  for (let i = commands.length - 1; i > lastFixIdx; i--) {
+    const c = commands[i];
+    if (c.human_status !== "Approved" && c.human_status !== "Edited") continue;
+    if (commandSucceeded(c.output_logs || "")) {
+      const cmd = (c.command_text || "").slice(0, 48);
+      return { passed: true, detail: `Post-fix verification succeeded (${cmd}).` };
+    }
+  }
+
+  return { passed: false };
+}

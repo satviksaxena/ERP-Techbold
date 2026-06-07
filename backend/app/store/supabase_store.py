@@ -114,20 +114,32 @@ class SupabaseStore:
 
         return row
 
-    def upsert_system_info(self, ticket_uuid: str, system: dict[str, Any], connection_status: str = "Idle") -> dict[str, Any]:
+    def upsert_system_info(
+        self,
+        ticket_uuid: str,
+        system: dict[str, Any],
+        connection_status: str | None = None,
+    ) -> dict[str, Any]:
+        existing = self.get_system_info(ticket_uuid)
+        if connection_status is not None:
+            status = connection_status
+        elif existing:
+            status = existing.get("connection_status") or "Idle"
+        else:
+            status = "Idle"
+
         payload = {
             "ticket_id": ticket_uuid,
             "host_ip": system.get("ip", ""),
             "username": system.get("username", "azureuser"),
             "port": system.get("port", 22),
             "os_version": system.get("os", "Ubuntu"),
-            "connection_status": connection_status,
+            "connection_status": status,
         }
         notes = system.get("notes", "")
         if notes:
             payload["system_notes"] = notes
 
-        existing = self.get_system_info(ticket_uuid)
         try:
             if existing:
                 resp = self.client.table("system_info").update(payload).eq("id", existing["id"]).execute()
@@ -149,20 +161,22 @@ class SupabaseStore:
 
     def insert_command(self, ticket_uuid: str, **fields: Any) -> dict[str, Any]:
         payload = {"ticket_id": ticket_uuid, **fields}
-        for key in ("_reasoning", "_ready_for_activity"):
+        for key in ("_reasoning", "_ready_for_activity", "plan_intent"):
             payload.pop(key, None)
-        try:
-            resp = self.client.table("ai_commands").insert(payload).execute()
-            return resp.data[0]
-        except Exception as exc:
-            if "agent_reasoning" in str(exc):
-                payload.pop("agent_reasoning", None)
-                resp = self.client.table("ai_commands").insert(payload).execute()
-                return resp.data[0]
-            raise
+        reasoning = payload.pop("agent_reasoning", None)
+        resp = self.client.table("ai_commands").insert(payload).execute()
+        row = resp.data[0]
+        if reasoning:
+            try:
+                self.client.table("ai_commands").update(
+                    {"agent_reasoning": reasoning}
+                ).eq("id", row["id"]).execute()
+            except Exception:
+                pass
+        return row
 
     def update_command(self, command_id: str, **fields: Any) -> dict[str, Any]:
-        for key in ("_reasoning", "_ready_for_activity"):
+        for key in ("_reasoning", "_ready_for_activity", "plan_intent"):
             fields.pop(key, None)
         try:
             resp = self.client.table("ai_commands").update(fields).eq("id", command_id).execute()

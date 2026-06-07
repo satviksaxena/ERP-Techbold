@@ -22,6 +22,16 @@ class ActivityDraft(BaseModel):
     validation_result: str
 
 
+class HypothesisStep(BaseModel):
+    agent_name: str = Field(description="Agent role for this step")
+    command_text: str = Field(description="Single shell command")
+    script_diff: str = Field(default="", description="Human-readable change description")
+    intent: str = Field(
+        default="diagnostic",
+        description="diagnostic | fix | validate",
+    )
+
+
 class HypothesisItem(BaseModel):
     title: str = Field(description="Short tab label, e.g. 'Service not running'")
     summary: str = Field(description="One paragraph explaining this approach")
@@ -29,6 +39,10 @@ class HypothesisItem(BaseModel):
     confidence: str = Field(description="high, medium, or low")
     first_command: str = Field(description="Safe first diagnostic command for this approach")
     fix_strategy: str = Field(description="What fix steps would follow if confirmed")
+    steps: list[HypothesisStep] = Field(
+        default_factory=list,
+        description="Ordered diagnostics then fixes for this path (3–6 steps)",
+    )
 
 
 class HypothesisList(BaseModel):

@@ -27,12 +27,17 @@ After your analysis, return JSON only:
 {{"hypotheses": [
   {{"title": "short tab label", "summary": "...", "likely_root_cause": "...",
     "confidence": "high|medium|low", "first_command": "safe read-only shell cmd",
-    "fix_strategy": "what we'd do if this hypothesis is correct"}}
+    "fix_strategy": "what we'd do if this hypothesis is correct",
+    "steps": [
+      {{"agent_name": "Customer System Analyzer", "command_text": "...", "script_diff": "+ ...", "intent": "diagnostic"}},
+      {{"agent_name": "Problem Solver", "command_text": "sudo ...", "script_diff": "+ ...", "intent": "fix"}}
+    ]}}
 ]}}
 
 Rules:
 - Propose 2–3 DISTINCT ranked hypotheses (different solution paths, not rewordings)
 - first_command must be safe diagnostics (no destructive ops)
+- steps: 3–6 ordered commands per hypothesis (diagnostics first, then fix)
 - Ground every hypothesis in the customer symptom and your reasoning
 - Include at least one service/config hypothesis and one resource/permission hypothesis when plausible"""
 
@@ -138,7 +143,9 @@ class TicketUnderstandingService:
             return None
 
     def _sanitize_item(self, item: HypothesisItem) -> dict[str, Any]:
+        from app.agent.plan_resolver import ensure_plan
+
         safety = self.safety.evaluate(item.first_command)
-        data = item.model_dump()
+        data = ensure_plan(item.model_dump())
         data["safety_status"] = safety.status
         return data

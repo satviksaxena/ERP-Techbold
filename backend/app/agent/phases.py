@@ -4,6 +4,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
+from app.agent.command_validator import is_valid_shell_command
+
 
 class PipelinePhase(str, Enum):
     INTAKE = "INTAKE"
@@ -24,14 +26,18 @@ def infer_phase(
 ) -> PipelinePhase:
     if public_test_done:
         return PipelinePhase.DOCUMENT
-    if needs_public_test:
+    if needs_public_test or verifier_recommend == "validate":
         return PipelinePhase.VALIDATE
 
     executed = [c for c in commands if c.get("human_status") in ("Approved", "Edited")]
     if not executed:
         return PipelinePhase.HYPOTHESIS_SELECTED
 
-    has_fix = any(_looks_like_fix(c.get("command_text") or "") for c in executed)
+    has_fix = any(
+        _looks_like_fix(c.get("command_text") or "")
+        and _command_succeeded(c.get("output_logs"))
+        for c in executed
+    )
     if has_fix:
         return PipelinePhase.FIX
 
@@ -55,17 +61,17 @@ def agent_for_phase(phase: PipelinePhase) -> str:
 
 
 def _looks_like_fix(command_text: str) -> bool:
-    t = command_text.lower().strip()
-    if not t:
+    from app.agent.command_intent import is_fix_command
+
+    return is_fix_command(command_text) and is_valid_shell_command(command_text)
+
+
+def _command_succeeded(output_logs: str | None) -> bool:
+    output = (output_logs or "").lower()
+    if "execution failed" in output:
         return False
-    markers = (
-        "chmod",
-        "chown",
-        "systemctl restart",
-        "systemctl start",
-        "systemctl enable",
-        "sed -i",
-        "tee ",
-        "mkdir -p",
-    )
-    return any(m in t for m in markers)
+    if "exit code:" in output and "exit code: 0" not in output:
+        return False
+    if "[exit " in output and "[exit 0]" not in output:
+        return False
+    return True
