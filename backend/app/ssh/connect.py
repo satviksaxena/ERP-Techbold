@@ -103,3 +103,20 @@ def open_ssh_client(
             raise SSHError(f"SSH connection to {host}:{port} failed: {exc}") from exc
 
     raise SSHError(f"SSH connection to {host}:{port} failed: {last_exc}")
+
+def tcp_ping(host: str, port: int, timeout: float = 5.0) -> tuple[int | None, str | None]:
+    """Perform a fast TCP connection to measure latency and check reachability without full SSH auth."""
+    import socket
+    import time
+    start = time.perf_counter()
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+        sock.close()
+        latency = int((time.perf_counter() - start) * 1000)
+        return latency, None
+    except socket.timeout:
+        return None, "Timeout"
+    except ConnectionRefusedError:
+        return None, "Connection Refused"
+    except Exception as e:
+        return None, str(e)

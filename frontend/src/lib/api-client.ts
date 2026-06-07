@@ -138,10 +138,16 @@ export const api = {
       body: JSON.stringify(fields ?? {}),
     }),
 
-  connectSsh: (ticketId: string) =>
+    connectSsh: (ticketId: string) =>
     request<{ ok: boolean; connection_status: string }>(
       `/api/tickets/${ticketId}/connect-ssh`,
       { method: "POST" },
+    ),
+
+  pingSsh: (ticketId: string) =>
+    request<{ ok: boolean; latency_ms: number | null; status: string; reason: string | null }>(
+      `/api/tickets/${ticketId}/ping`,
+      { method: "GET" },
     ),
 
   reconcileValidation: (ticketId: string) =>
