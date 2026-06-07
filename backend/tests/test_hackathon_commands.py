@@ -121,3 +121,38 @@ def test_hackathon_skips_non_grading_tickets():
     assert proposal is None
     assert not is_hackathon_grading_ticket(ticket)
     assert is_hackathon_grading_ticket({"ticket_code": "7001"})
+
+
+def test_upload_ticket_skips_hackathon_service_progression():
+    from app.agent.hackathon_commands import uses_hackathon_service_progression
+
+    ticket = {
+        "ticket_code": "7002",
+        "title": "Document uploads fail with permission denied",
+        "report_text": "permission denied when uploading",
+    }
+    assert is_hackathon_grading_ticket(ticket)
+    assert not uses_hackathon_service_progression(ticket)
+
+
+def test_upload_ticket_queues_public_test_after_chown_fix():
+    ticket = {
+        "ticket_code": "7002",
+        "title": "Document uploads fail with permission denied",
+        "report_text": "permission denied when uploading",
+    }
+    commands = [
+        {
+            "command_text": "stat /srv/customer-portal/uploads",
+            "human_status": "Approved",
+            "output_logs": "Uid: 0 Gid: 0 root:root /srv/customer-portal/uploads\nexit code: 0",
+        },
+        {
+            "command_text": "sudo chown -R www-data:www-data /srv/customer-portal/uploads",
+            "human_status": "Approved",
+            "output_logs": "exit code: 0",
+        },
+    ]
+    proposal = next_hackathon_command(ticket, commands, SafetyLayer())
+    assert proposal is not None
+    assert "public-test.sh" in proposal["command_text"]

@@ -26,6 +26,7 @@ _safety = SafetyLayer()
 
 class ApproveBody(BaseModel):
     command_text: str | None = None
+    auto_approved: bool = False
 
 
 class ActivityBody(BaseModel):
@@ -161,7 +162,11 @@ def approve_command(
     orch: AgentOrchestrator = Depends(get_orchestrator),
 ) -> dict[str, Any]:
     try:
-        cmd = orch.approve_command(command_id, body.command_text)
+        cmd = orch.approve_command(
+            command_id,
+            body.command_text,
+            auto_approved=body.auto_approved,
+        )
         return {"ok": True, "command": cmd}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

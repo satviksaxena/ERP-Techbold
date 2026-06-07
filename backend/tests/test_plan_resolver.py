@@ -80,3 +80,94 @@ def test_remount_is_fix():
     from app.agent.command_intent import is_fix_command
 
     assert is_fix_command("sudo mount -o remount,rw /")
+
+
+def test_failed_fix_step_is_not_plan_done():
+    from app.agent.plan_resolver import PlanStep, plan_step_done
+
+    step = PlanStep(
+        "Problem Solver",
+        "sudo chown -R www-data:root /var/lib/nginx",
+        "+ fix",
+        "fix",
+    )
+    commands = [
+        {
+            "command_text": "sudo chown -R www-data:root /var/lib/nginx",
+            "human_status": "Approved",
+            "output_logs": "cannot access\nexit code: 1",
+        }
+    ]
+    assert not plan_step_done(commands, step)
+
+
+def test_permission_fixup_from_stat_evidence():
+    from app.agent.plan_resolver import permission_fixup_fallback
+
+    ticket = {"title": "Document uploads fail with permission denied", "report_text": ""}
+    commands = [
+        {
+            "command_text": "sudo -n stat -c '%A %U:%G %n' /srv/customer-portal/uploads",
+            "human_status": "Approved",
+            "output_logs": "drwxr-xr-x root:root /srv/customer-portal/uploads\nexit code: 0",
+        },
+        {
+            "command_text": "sudo chown -R www-data:root /var/lib/nginx",
+            "human_status": "Approved",
+            "output_logs": "exit code: 1",
+        },
+    ]
+    proposal = permission_fixup_fallback(ticket, commands, SafetyLayer())
+    assert proposal is not None
+    assert "/srv/customer-portal/uploads" in proposal["command_text"]
+    assert "www-data:www-data" in proposal["command_text"]
+
+
+def test_switch_path_proposes_fix_when_alt_diagnostics_done():
+    from app.agent.plan_resolver import diagnostics_complete, next_plan_across_hypotheses
+
+    upload_path = {
+        "title": "Upload Directory Permissions",
+        "likely_root_cause": "wrong owner on upload dir",
+        "first_command": "sudo find /var/www -type d -name upload -exec ls -ld {} +",
+        "fix_strategy": "sudo chown -R www-data:www-data /srv/customer-portal/uploads",
+        "steps": [
+            {
+                "agent_name": "Customer System Analyzer",
+                "command_text": "sudo find /var/www -type d -name upload -exec ls -ld {} +",
+                "intent": "diagnostic",
+            },
+            {
+                "agent_name": "Problem Solver",
+                "command_text": "sudo chown -R www-data:www-data /srv/customer-portal/uploads",
+                "intent": "fix",
+            },
+        ],
+    }
+    disk_path = {
+        "title": "Disk Space",
+        "likely_root_cause": "disk full",
+        "first_command": "df -h",
+        "fix_strategy": "sudo apt-get clean",
+    }
+    commands = [
+        {
+            "command_text": "sudo find /var/www -type d -name upload -exec ls -ld {} +",
+            "human_status": "Approved",
+            "output_logs": "exit code: 0",
+        },
+        {"command_text": "df -h", "human_status": "Approved", "output_logs": "exit code: 0"},
+    ]
+    assert diagnostics_complete(upload_path, commands)
+    proposal, idx = next_plan_across_hypotheses(
+        [upload_path, disk_path],
+        selected_index=1,
+        commands=commands,
+        safety=SafetyLayer(),
+        verifier_recommend="switch_path",
+        prefer_switch=True,
+    )
+    assert idx == 0
+    assert proposal is not None
+    assert proposal.get("plan_intent") == "fix"
+    assert "chown" in proposal["command_text"]

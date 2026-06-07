@@ -52,6 +52,15 @@ def test_public_test_done_ignores_pending():
     assert not AgentOrchestrator._public_test_done(commands)
 
 
+def test_looks_like_fix_ignores_find_with_dev_null():
+    cmd = 'sudo find /var/www /opt /srv -type d -name "*upload*" -exec ls -ld {} + 2>/dev/null'
+    assert not AgentOrchestrator._looks_like_fix(cmd)
+
+
+def test_looks_like_fix_detects_file_redirect():
+    assert AgentOrchestrator._looks_like_fix("echo foo > /etc/customer-status.env")
+
+
 def test_next_proposal_stops_after_public_test_passes():
     class FakeStore:
         def list_commands(self, ticket_id):
@@ -76,6 +85,51 @@ def test_next_proposal_stops_after_public_test_passes():
     orch.hypothesis_store = type("H", (), {"get": lambda self, tid: None})()
 
     assert orch._next_proposal({"id": "ticket-1"}) is None
+
+
+def test_needs_public_test_after_upload_chown_fix():
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    ticket = {
+        "ticket_code": "7002",
+        "title": "Document uploads fail with permission denied",
+        "report_text": "permission denied",
+    }
+    fix = {
+        "command_text": "sudo chown -R www-data:www-data /srv/customer-portal/uploads",
+        "human_status": "Approved",
+        "output_logs": "exit code: 0",
+    }
+    assert orch._needs_public_test(ticket, [fix])
+
+
+def test_filter_proposal_allows_validate_intent_after_fix():
+    fix = {
+        "command_text": "sudo chown -R www-data:www-data /srv/customer-portal/uploads",
+        "human_status": "Approved",
+        "output_logs": "exit code: 0",
+        "ticket_id": "ticket-upload",
+    }
+    proposal = {
+        "agent_name": "Problem Solver",
+        "command_text": "sudo /opt/hackathon/public-test.sh",
+        "script_diff": "+ validate",
+        "safety_status": "Safe",
+        "human_status": "Pending",
+        "output_logs": "",
+        "plan_intent": "validate",
+    }
+
+    class FakeStore:
+        def get_ticket(self, ticket_id):
+            return {
+                "ticket_code": "7002",
+                "title": "Document uploads fail with permission denied",
+                "report_text": "permission denied",
+            }
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch.store = FakeStore()
+    assert orch._filter_proposal(proposal, [fix]) is not None
 
 
 def test_needs_public_test_not_after_diagnostics_only():
@@ -143,6 +197,83 @@ def test_should_hold_for_retry_false_for_diagnostic_grep():
         "output_logs": "exit code: 1",
     }
     assert not AgentOrchestrator._should_hold_for_retry(cmd)
+
+
+def test_realign_pending_replaces_diagnostic_with_public_test():
+    from app.agent.llm_schemas import PUBLIC_TEST_COMMAND
+
+    class FakeStore:
+        def __init__(self):
+            self.commands = [
+                {
+                    "id": "fix-1",
+                    "ticket_id": "t1",
+                    "command_text": "sudo systemctl enable --now customer-status.service",
+                    "human_status": "Approved",
+                    "output_logs": "exit code: 0",
+                    "created_at": "1",
+                },
+                {
+                    "id": "pending-1",
+                    "ticket_id": "t1",
+                    "command_text": "sudo systemctl status nginx --no-pager -l || true",
+                    "human_status": "Pending",
+                    "output_logs": "",
+                    "created_at": "2",
+                },
+            ]
+            self.ticket = {
+                "id": "t1",
+                "ticket_code": "7001",
+                "title": "Status API intermittently unavailable",
+                "report_text": "down after reboot",
+            }
+
+        def list_commands(self, ticket_id):
+            return self.commands
+
+        def get_ticket(self, ticket_id):
+            return self.ticket
+
+        def update_command(self, command_id, **fields):
+            for cmd in self.commands:
+                if cmd["id"] == command_id:
+                    cmd.update(fields)
+
+    store = FakeStore()
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch.store = store
+    orch.audit = type("A", (), {"record": lambda *a, **k: None})()
+    orch.safety = __import__("app.safety.layer", fromlist=["SafetyLayer"]).SafetyLayer()
+    orch.hypothesis_store = type(
+        "H",
+        (),
+        {
+            "get": lambda self, tid: {
+                "hypotheses": [
+                    {
+                        "title": "Systemd Service Not Enabled",
+                        "fix_strategy": "Enable status-api.service",
+                        "steps": [
+                            {
+                                "command_text": PUBLIC_TEST_COMMAND,
+                                "intent": "validate",
+                                "agent_name": "Problem Solver",
+                            }
+                        ],
+                    }
+                ],
+                "selected_index": 0,
+                "pipeline_state": {},
+            }
+        },
+    )()
+
+    assert orch._realign_pending_gate("t1")
+    pending = [c for c in store.commands if c.get("human_status") == "Pending"]
+    assert not pending
+    rejected = [c for c in store.commands if c.get("human_status") == "Rejected"]
+    assert rejected and "nginx" in rejected[0]["command_text"]
 
 
 def test_command_from_fix_strategy_extracts_chown():
