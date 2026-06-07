@@ -263,6 +263,25 @@ def connect_ssh(ticket_id: str, orch: AgentOrchestrator = Depends(get_orchestrat
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/tickets/{ticket_id}/ping")
+def ping_ssh(ticket_id: str, orch: AgentOrchestrator = Depends(get_orchestrator)) -> dict[str, Any]:
+    try:
+        sys_info = orch.store.get_system_info(ticket_id)
+        if not sys_info or not sys_info.get("host_ip"):
+            return {"ok": False, "latency_ms": None, "status": "Idle", "reason": "No system info available"}
+        
+        from app.ssh.connect import tcp_ping
+        host = sys_info["host_ip"]
+        port = int(sys_info.get("port", 22))
+        
+        latency, error = tcp_ping(host, port)
+        if error:
+            return {"ok": False, "latency_ms": None, "status": "Failed", "reason": error}
+        return {"ok": True, "latency_ms": latency, "status": "Connected", "reason": None}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.get("/api/audit")
 def get_audit(ticket_id: str | None = None) -> dict[str, Any]:
     entries = audit_log.list_entries(ticket_id)

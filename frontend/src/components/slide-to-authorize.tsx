@@ -23,6 +23,7 @@ export function SlideToAuthorize({
   const [trackWidth, setTrackWidth] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [done, setDone] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
 
   onAuthorizeRef.current = onAuthorize;
   disabledRef.current = disabled;
@@ -36,6 +37,18 @@ export function SlideToAuthorize({
   useEffect(() => {
     resetKnob();
   }, [commandId, resetKnob]);
+
+  useEffect(() => {
+    if (!done) {
+      setElapsedMs(0);
+      return;
+    }
+    const start = Date.now();
+    const timer = setInterval(() => {
+      setElapsedMs(Date.now() - start);
+    }, 50);
+    return () => clearInterval(timer);
+  }, [done]);
 
   useEffect(() => {
     const el = trackRef.current;
@@ -116,7 +129,7 @@ export function SlideToAuthorize({
       />
       <div className="absolute inset-0 grid place-items-center pointer-events-none">
         <span className="font-mono text-xs uppercase tracking-[0.25em] text-muted-foreground px-14 text-center">
-          {done ? "authorized · executing" : label}
+          {done ? `executing · ${elapsedMs}ms` : label}
         </span>
       </div>
       <button
