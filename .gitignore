@@ -21,6 +21,7 @@ dist/
 .output/
 .nitro/
 .tanstack/
+.vercel/
 
 # OS
 .DS_Store
