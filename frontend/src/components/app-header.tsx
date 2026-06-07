@@ -1,4 +1,4 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { Activity, CloudDownload, RotateCcw, Terminal } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ export function AppHeader() {
   const [resetting, setResetting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const qc = useQueryClient();
+  const navigate = useNavigate();
 
   async function syncFromPhoenix() {
     setSyncing(true);
@@ -38,9 +39,10 @@ export function AppHeader() {
   async function resetWorkspace() {
     setResetting(true);
     try {
-      await api.resetWorkspace();
-      toast.success("Workspace reset — VMs rebooting, all tickets reopened");
-      qc.invalidateQueries();
+      const result = await api.resetWorkspace();
+      await qc.resetQueries();
+      void navigate({ to: "/" });
+      toast.success(result.message || "Workspace cleared — VMs rebooting in background");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Reset failed";
       toast.error(msg);

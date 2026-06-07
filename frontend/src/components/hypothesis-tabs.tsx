@@ -26,7 +26,6 @@ export function HypothesisTabs({
   const [selecting, setSelecting] = useState(false);
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const generateAttempted = useRef(false);
-  const syncAttempted = useRef(false);
 
   const cmds = commands;
 
@@ -38,7 +37,6 @@ export function HypothesisTabs({
 
   useEffect(() => {
     generateAttempted.current = false;
-    syncAttempted.current = false;
     setExpandedIndex(null);
   }, [ticketId]);
 
@@ -71,40 +69,6 @@ export function HypothesisTabs({
       setExpandedIndex(selectedIndex);
     }
   }, [hypotheses.length, selectedIndex, expandedIndex]);
-
-  useEffect(() => {
-    if (!ticketId || !hypotheses.length || syncAttempted.current) return;
-    const pending = cmds.find((c) => c.human_status === "Pending");
-    const expected = hypotheses[selectedIndex]?.first_command?.trim();
-    if (!pending) return;
-
-    const isPrematurePublicTest =
-      (pending.command_text || "").toLowerCase().includes("public-test");
-    const needsResync =
-      isPrematurePublicTest ||
-      (expected && pending.command_text.trim() !== expected);
-
-    if (!needsResync) return;
-
-    const firstAlreadyRan =
-      expected &&
-      cmds.some(
-        (c) =>
-          (c.human_status === "Approved" || c.human_status === "Edited") &&
-          c.command_text.trim() === expected,
-      );
-    if (!isPrematurePublicTest && firstAlreadyRan) return;
-
-    syncAttempted.current = true;
-    api
-      .selectHypothesis(ticketId, selectedIndex)
-      .then(() => {
-        qc.invalidateQueries({ queryKey: ["commands", ticketId] });
-      })
-      .catch(() => {
-        syncAttempted.current = false;
-      });
-  }, [ticketId, hypotheses, selectedIndex, cmds, qc]);
 
   const activeIndex = expandedIndex ?? selectedIndex;
   const active = hypotheses[activeIndex];

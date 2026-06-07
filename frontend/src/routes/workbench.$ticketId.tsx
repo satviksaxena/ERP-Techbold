@@ -63,7 +63,7 @@ function WorkbenchPage() {
   const { data: ticket, isLoading: tLoad, error: tErr } = useTicket(ticketRef);
   const ticketId = ticket?.id;
   const { data: sys } = useSystemInfo(ticketId);
-  const { data: cmds = [] } = useCommands(ticketId);
+  const { data: cmds = [], isFetching: cmdsFetching } = useCommands(ticketId);
   const { data: activity } = useActivity(ticketId);
   const qc = useQueryClient();
 
@@ -89,28 +89,37 @@ function WorkbenchPage() {
   );
   const [analyzing, setAnalyzing] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [pipelineSettling, setPipelineSettling] = useState(false);
   const reconcileAttempted = useRef(false);
-  const resumeAttempted = useRef(false);
+
+  const RESUME_COOLDOWN_MS = 20_000;
 
   useEffect(() => {
     reconcileAttempted.current = false;
-    resumeAttempted.current = false;
   }, [ticketId]);
 
   useEffect(() => {
-    if (!ticketId || resumeAttempted.current) return;
-    resumeAttempted.current = true;
+    if (!ticketId) return;
+    const key = `resume:${ticketId}`;
+    const last = Number(sessionStorage.getItem(key) || 0);
+    if (Date.now() - last < RESUME_COOLDOWN_MS) return;
+    sessionStorage.setItem(key, String(Date.now()));
+
+    setPipelineSettling(true);
     api
       .resumePipeline(ticketId)
-      .then((result) => {
+      .then(async (result) => {
         if (result.resumed) {
-          qc.invalidateQueries({ queryKey: ["commands", ticketId] });
+          await qc.refetchQueries({ queryKey: ["commands", ticketId] });
           qc.invalidateQueries({ queryKey: ["ticket", ticketRef] });
           qc.invalidateQueries({ queryKey: ["activity", ticketId] });
         }
       })
       .catch(() => {
-        resumeAttempted.current = false;
+        sessionStorage.removeItem(key);
+      })
+      .finally(() => {
+        setPipelineSettling(false);
       });
   }, [ticketId, ticketRef, qc]);
 
@@ -118,6 +127,16 @@ function WorkbenchPage() {
     if (!ticketId) return;
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
+      // Only recover if the gate looks stuck (no pending after prior commands).
+      const hasExecuted = cmds.some(
+        (c) => c.human_status === "Approved" || c.human_status === "Edited",
+      );
+      const hasPending = cmds.some((c) => c.human_status === "Pending");
+      if (!hasExecuted || hasPending) return;
+      const key = `resume:${ticketId}`;
+      const last = Number(sessionStorage.getItem(key) || 0);
+      if (Date.now() - last < RESUME_COOLDOWN_MS) return;
+      sessionStorage.setItem(key, String(Date.now()));
       void api.resumePipeline(ticketId).then((result) => {
         if (result.resumed) {
           qc.invalidateQueries({ queryKey: ["commands", ticketId] });
@@ -127,7 +146,7 @@ function WorkbenchPage() {
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [ticketId, qc]);
+  }, [ticketId, qc, cmds]);
 
   useEffect(() => {
     if (!ticketId || !validationPass.passed || !pending || reconcileAttempted.current) return;
@@ -350,7 +369,11 @@ function WorkbenchPage() {
               }
               accent={pending ? "warn" : validationPass.passed ? "safe" : undefined}
             >
-              {pending && !validationPass.passed ? (
+              {pipelineSettling || cmdsFetching ? (
+                <div className="rounded-lg border border-dashed border-border bg-background/30 p-8 text-center">
+                  <p className="text-sm text-muted-foreground">Syncing command gate with selected pathway…</p>
+                </div>
+              ) : pending && !validationPass.passed ? (
                 <SafetyGate command={pending} />
               ) : validationPass.passed ? (
                 <div className="rounded-lg border border-safe/40 bg-safe/10 p-6 text-center">

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
+import threading
+import time
 from typing import Any
 
 from app.agent.azure_agent import AzureOpenAIAgent
@@ -16,6 +19,11 @@ from app.ssh.key_resolver import discover_ssh_key, resolve_ssh_key_path
 from app.ssh.runner import SSHError, SSHRunner, classify_ssh_failure
 from app.store.hypothesis_store import HypothesisStore
 from app.store.supabase_store import SupabaseStore
+
+logger = logging.getLogger(__name__)
+
+_RESUME_COOLDOWN_SECONDS = 15.0
+_last_resume_at: dict[str, float] = {}
 
 AGENTS = [
     "Problem Analyzer",
@@ -171,6 +179,20 @@ class AgentOrchestrator:
         existing = self.store.list_commands(ticket_uuid)
         pending = [c for c in existing if c.get("human_status") == "Pending"]
         title = h.get("title") or f"path {idx + 1}"
+
+        if pending:
+            pending_cmd = pending[0]
+            pending_text = (pending_cmd.get("command_text") or "").strip()
+            if (
+                pending_text != first_cmd
+                and not self._is_public_test(pending_cmd)
+                and any(
+                    c.get("human_status") in ("Approved", "Edited", "Rejected")
+                    for c in existing
+                )
+            ):
+                # Gate already advanced past step 1 — don't rewind on resume/select.
+                return pending_cmd
 
         # Don't rewind to the pathway's first diagnostic after it already ran.
         if self._command_text_executed(existing, first_cmd):
@@ -733,10 +755,14 @@ Previous commands and outputs are in the conversation."""
         self._refresh_activity_draft(ticket_uuid)
         if ticket and not validation_passed:
             all_commands = self.store.list_commands(ticket_uuid)
+            if all_commands:
+                last = all_commands[-1]
+                if self._is_executed(last) and self._command_output_failed(last.get("output_logs")):
+                    return
             next_cmd = self._next_proposal(ticket)
             next_cmd = self._filter_proposal(next_cmd, all_commands)
             existing_pending = [
-                c for c in all_commands if c.get("human_status") == "Pending"
+                c for c in self.store.list_commands(ticket_uuid) if c.get("human_status") == "Pending"
             ]
             if not existing_pending and next_cmd:
                 self.store.insert_command(ticket_uuid, **next_cmd)
@@ -744,6 +770,12 @@ Previous commands and outputs are in the conversation."""
 
     def resume_pipeline(self, ticket_uuid: str) -> dict[str, Any]:
         """Unstick workbench when follow-up was lost (e.g. uvicorn --reload during approve)."""
+        now = time.monotonic()
+        last = _last_resume_at.get(ticket_uuid, 0.0)
+        if now - last < _RESUME_COOLDOWN_SECONDS:
+            return {"resumed": False, "reason": "rate_limited"}
+        _last_resume_at[ticket_uuid] = now
+
         self._dedupe_pending_commands(ticket_uuid)
         commands = self.store.list_commands(ticket_uuid)
         if not commands:
@@ -774,14 +806,31 @@ Previous commands and outputs are in the conversation."""
                     }
 
         if executed and not pending and not validation_passed:
-            self.approve_followup(ticket_uuid, validation_passed)
+            last = executed[-1]
+            if self._command_output_failed(last.get("output_logs")):
+                return {"resumed": False, "reason": "awaiting_retry_after_failure"}
+            threading.Thread(
+                target=self._approve_followup_background,
+                args=(ticket_uuid, validation_passed),
+                daemon=True,
+            ).start()
             self.audit.record("pipeline_resumed", ticket_id=ticket_uuid)
-            return {"resumed": True, "action": "approve_followup"}
+            return {"resumed": True, "action": "approve_followup_async"}
 
         return {"resumed": False, "reason": "pipeline_ok"}
 
+    def _approve_followup_background(self, ticket_uuid: str, validation_passed: bool) -> None:
+        try:
+            self.approve_followup(ticket_uuid, validation_passed)
+        except Exception as exc:
+            logger.warning("Background approve_followup failed for %s: %s", ticket_uuid, exc)
+            self.audit.record("approve_followup_failed", ticket_id=ticket_uuid, error=str(exc))
+
     def approve_command(self, command_id: str, edited_command: str | None = None) -> dict[str, Any]:
         updated, ticket_uuid, validation_passed = self._approve_command_core(command_id, edited_command)
+        if self._command_output_failed(updated.get("output_logs")):
+            self._refresh_activity_draft(ticket_uuid)
+            return updated
         self.approve_followup(ticket_uuid, validation_passed)
         return updated
 
@@ -845,6 +894,7 @@ Previous commands and outputs are in the conversation."""
             "output_logs": "",
         }
 
+        self._dedupe_pending_commands(ticket_uuid)
         pending = [c for c in self.store.list_commands(ticket_uuid) if c.get("human_status") == "Pending"]
         if pending:
             row = self.store.update_command(
@@ -972,10 +1022,35 @@ Previous commands and outputs are in the conversation."""
         self.audit.record("activity_submitted", ticket_id=ticket_uuid, ticket_code=ticket["ticket_code"])
         return {"ok": True, "ticket_id": ticket_uuid}
 
-    def reset_workspace(self) -> None:
+    def reset_workspace(self) -> dict[str, Any]:
+        """Clear Supabase immediately; reboot Phoenix VMs in the background."""
+        try:
+            self.store.reset_workspace()
+        except Exception as exc:
+            logger.exception("Local workspace reset failed")
+            raise RuntimeError(f"Failed to clear local workspace: {exc}") from exc
+
+        self.audit.clear()
+        self._run_started.clear()
+        self._ssh_key_by_ticket.clear()
+        self._system_notes_by_ticket.clear()
+        self.hypothesis_store.clear_all()
+        self.audit.record("workspace_local_cleared")
+
         if self.phoenix:
+            threading.Thread(target=self._phoenix_reset_background, daemon=True).start()
+
+        return {
+            "local_cleared": True,
+            "phoenix_ok": True,
+            "phoenix_message": "VM reboot started in background — wait ~2 min then Sync ERP",
+        }
+
+    def _phoenix_reset_background(self) -> None:
+        if not self.phoenix:
+            return
+        try:
             self.phoenix.reset()
-            # Phoenix reset clears activities/VMs but tickets can stay DONE — reopen for a fresh run.
             for pt in self.phoenix.list_tickets(sort="date"):
                 if pt.get("status") == "OPEN":
                     continue
@@ -987,18 +1062,14 @@ Previous commands and outputs are in the conversation."""
                         ticket_code=str(pt.get("id")),
                         error=str(exc),
                     )
-        self.store.reset_workspace()
-        self.audit.clear()
-        self._run_started.clear()
-        self._ssh_key_by_ticket.clear()
-        self._system_notes_by_ticket.clear()
-        self.hypothesis_store.clear_all()
-        if self.phoenix:
             try:
                 self.sync_tickets()
             except Exception as exc:
                 self.audit.record("reset_sync_failed", error=str(exc))
-        self.audit.record("workspace_reset")
+            self.audit.record("phoenix_reset_complete")
+        except Exception as exc:
+            logger.warning("Phoenix background reset failed: %s", exc)
+            self.audit.record("phoenix_reset_failed", error=str(exc))
 
     def _run_ssh_command(
         self,

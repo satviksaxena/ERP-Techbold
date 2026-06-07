@@ -133,7 +133,10 @@ export const api = {
     ),
 
   resetWorkspace: () =>
-    request<{ ok: string; message: string }>("/api/workspace/reset", { method: "POST" }),
+    request<{ ok: string; message: string; local_cleared?: boolean }>(
+      "/api/workspace/reset",
+      { method: "POST", timeoutMs: 30_000 },
+    ),
 };
 
 export { API_BASE };

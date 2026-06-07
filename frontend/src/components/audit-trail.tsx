@@ -40,7 +40,8 @@ export function AuditTrail({ ticketId }: { ticketId: string | undefined }) {
     queryKey: ["audit", ticketId],
     queryFn: () => api.getAudit(ticketId),
     enabled: !!ticketId,
-    refetchInterval: 4000,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
 
   const entries = (data?.entries ?? []) as AuditEntry[];

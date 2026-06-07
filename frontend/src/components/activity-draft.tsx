@@ -46,17 +46,26 @@ export function ActivityDraft({
   const [confetti, setConfetti] = useState(false);
 
   useEffect(() => {
-    if (activity) {
+    if (!activity) {
       setDraft({
-        summary: activity.summary,
-        root_cause: activity.root_cause,
-        actions_taken: activity.actions_taken,
-        commands_summary: activity.commands_summary,
-        validation_result: activity.validation_result,
+        summary: "",
+        root_cause: "",
+        actions_taken: "",
+        commands_summary: "",
+        validation_result: "",
       });
-      setCommitted(activity.submitted_to_erp);
+      setCommitted(false);
+      return;
     }
-  }, [activity, executedCount]);
+    setDraft({
+      summary: activity.summary,
+      root_cause: activity.root_cause,
+      actions_taken: activity.actions_taken,
+      commands_summary: activity.commands_summary,
+      validation_result: activity.validation_result,
+    });
+    setCommitted(activity.submitted_to_erp);
+  }, [activity, executedCount, ticketId]);
 
   async function save(commit = false) {
     setSaving(true);

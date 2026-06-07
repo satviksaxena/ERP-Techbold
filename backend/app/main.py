@@ -258,12 +258,16 @@ def get_audit(ticket_id: str | None = None) -> dict[str, Any]:
 
 
 @app.post("/api/workspace/reset")
-def reset_workspace(orch: AgentOrchestrator = Depends(get_orchestrator)) -> dict[str, str]:
+def reset_workspace(orch: AgentOrchestrator = Depends(get_orchestrator)) -> dict[str, Any]:
     try:
-        orch.reset_workspace()
-        return {"ok": "true", "message": "Workspace reset — VMs rebooted, tickets reopened, local state cleared"}
-    except PhoenixError as exc:
-        raise HTTPException(status_code=exc.status_code or 502, detail=str(exc)) from exc
+        result = orch.reset_workspace()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {
+        "ok": "true",
+        "message": "Local workspace cleared — VMs rebooting in background (~2 min)",
+        **result,
+    }
 
 
 class SafetyCheckBody(BaseModel):

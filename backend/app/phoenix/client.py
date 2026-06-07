@@ -27,9 +27,10 @@ class PhoenixClient:
     def close(self) -> None:
         self._client.close()
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+    def _request(self, method: str, path: str, *, timeout: float | None = None, **kwargs: Any) -> Any:
         try:
-            resp = self._client.request(method, path, **kwargs)
+            req_timeout = httpx.Timeout(timeout, connect=10.0) if timeout else None
+            resp = self._client.request(method, path, timeout=req_timeout, **kwargs)
         except httpx.TimeoutException as exc:
             raise PhoenixError("Phoenix API request timed out") from exc
         except httpx.RequestError as exc:
@@ -98,4 +99,5 @@ class PhoenixClient:
         return self._request("POST", "/api/v1/activities/create", json=payload)
 
     def reset(self) -> dict[str, Any]:
-        return self._request("POST", "/api/v1/me/reset")
+        # VM reboot can take 60–120s on the Phoenix side.
+        return self._request("POST", "/api/v1/me/reset", timeout=120.0)

@@ -8,6 +8,8 @@ import { AlertTriangle, ShieldCheck, ShieldX, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
+import { commandFailed } from "@/components/audit-trail";
+import type { AiCommand as AiCommandType } from "@/lib/types";
 
 const safetyStyle: Record<string, { ring: string; icon: typeof ShieldCheck; text: string }> = {
   Safe:    { ring: "ring-safe/50",   icon: ShieldCheck,    text: "text-safe" },
@@ -32,14 +34,31 @@ export function SafetyGate({ command }: { command: AiCommand }) {
     if (blocked || busy) return;
     setBusy(true);
     try {
-      await api.approveCommand(command.id, edited);
+      const result = await api.approveCommand(command.id, edited);
       await qc.refetchQueries({ queryKey: ["commands", command.ticket_id] });
-      const passMsg = edited.toLowerCase().includes("public-test")
-        ? " — check validation banner for PASS status"
-        : "";
-      toast.success(
-        (isEdited ? "Edited command executed" : "Command authorized & executed") + passMsg,
-      );
+      const executed = result.command as AiCommandType | undefined;
+      const failed = executed ? commandFailed(executed) : false;
+      const output = (executed?.output_logs || "").toLowerCase();
+      const sshUnreachable =
+        output.includes("timed out") ||
+        output.includes("connection refused") ||
+        output.includes("connection reset");
+
+      if (failed) {
+        toast.error(
+          sshUnreachable
+            ? "VM unreachable over SSH — click Connect SSH, wait ~2 min after a reset, then Retry below"
+            : "Command ran but failed — check terminal output and use Retry if needed",
+          { duration: 8000 },
+        );
+      } else {
+        const passMsg = edited.toLowerCase().includes("public-test")
+          ? " — check validation banner for PASS status"
+          : "";
+        toast.success(
+          (isEdited ? "Edited command executed" : "Command authorized & executed") + passMsg,
+        );
+      }
       qc.invalidateQueries({ queryKey: ["commands", command.ticket_id] });
       qc.invalidateQueries({ queryKey: ["ticket", command.ticket_id] });
       qc.invalidateQueries({ queryKey: ["system_info", command.ticket_id] });
