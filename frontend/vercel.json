@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "http://34.207.204.198:8000/health"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "http://34.207.204.198:8000/api/:path*"
+    }
+  ]
+}
